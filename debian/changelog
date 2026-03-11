@@ -1,0 +1,5 @@
+pwldapd (0.1.0-1) trixie; urgency=low
+
+  * Initial packaging.
+
+ -- Michael Paddon <michael@paddon.org>  Wed, 11 Mar 2026 00:00:00 +0000

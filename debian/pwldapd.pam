@@ -1,0 +1,6 @@
+# PAM configuration for pwldapd LDAP bind authentication.
+# This file is installed as /etc/pam.d/pwldapd by the package.
+# Customise it to apply LDAP-specific authentication policies independently
+# of the console login stack (e.g. add failure delays or account restrictions).
+@include common-auth
+@include common-account

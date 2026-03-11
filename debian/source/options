@@ -1,0 +1,2 @@
+# Exclude build artefacts and vendored Cargo cache from the source tarball.
+extend-diff-ignore = "^target/|^debian/\.cargo/"
