@@ -1,0 +1,22 @@
+[package]
+name = "pwldapd"
+version = "0.1.0"
+edition = "2024"
+description = "LDAP daemon backed by system accounts"
+
+[[bin]]
+name = "pwldapd"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-rustls = "0.26"
+rustls-pemfile = "2"
+libc = "0.2"
+pam = "0.7"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
+anyhow = "1"
+zeroize = "1"

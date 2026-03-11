@@ -1,0 +1,418 @@
+.TH PWLDAPD 8 "March 2026" "pwldapd" "System Administration"
+.
+.SH NAME
+pwldapd \- LDAP daemon backed by the local POSIX user and group database
+.
+.SH SYNOPSIS
+.B pwldapd
+.RB [ \-l
+.IR addr ]
+.RB [ \-\-tls\-listen
+.IR addr ]
+.RB [ \-b
+.IR dn ]
+.RB [ \-u
+.IR range ]
+.RB [ \-g
+.IR range ]
+.RB [ \-\-tls\-cert
+.IR file ]
+.RB [ \-\-tls\-key
+.IR file ]
+.
+.SH DESCRIPTION
+.B pwldapd
+is a read-only LDAP server (RFC\ 4510) that exposes the local POSIX user
+and group database over the LDAP protocol.
+It reads accounts through the system's name-service switch (NSS) layer
+and presents them as a standard
+.BR posixAccount / inetOrgPerson
+and
+.B posixGroup
+directory tree.
+Bind requests are authenticated via PAM.
+Anonymous binds are accepted.
+.PP
+The daemon is intended for use on a single host where LDAP-aware
+applications\(emsuch as SSH, sudo, or web servers\(emneed to look up
+local accounts without requiring a separate directory service.
+It does not persist any state and does not support write operations.
+.
+.SS Directory structure
+The served tree is rooted at the base DN (see
+.BR \-\-base\-dn )
+and has the following layout:
+.PP
+.RS
+.nf
+dc=host,dc=example,dc=com
+\(lc\(em ou=people
+\(lc   \(lc\(em uid=alice,...
+\(lc   \(aq\(em uid=bob,...
+\(aq\(em ou=groups
+    \(lc\(em cn=staff,...
+    \(aq\(em cn=wheel,...
+.fi
+.RE
+.PP
+Each
+.B uid=\c
+\fIname\fR
+entry under
+.B ou=people
+carries the following attributes:
+.BR objectClass " (top, posixAccount, inetOrgPerson),"
+.BR uid ,
+.BR cn ,
+.BR sn ,
+.BR givenName ,
+.BR uidNumber ,
+.BR gidNumber ,
+.BR homeDirectory ,
+.BR loginShell ,
+.BR gecos .
+The
+.BR givenName ,
+.BR roomNumber ,
+.BR telephoneNumber ,
+and
+.B homePhone
+attributes are also populated when the corresponding GECOS fields
+are non-empty (see
+.BR GECOS\ PARSING ).
+.PP
+Each
+.B cn=\c
+\fIname\fR
+entry under
+.B ou=groups
+carries:
+.BR objectClass " (top, posixGroup),"
+.BR cn ,
+.BR gidNumber ,
+.BR memberUid .
+.
+.SH OPTIONS
+.TP
+.BI \-l " addr" ", \-\-listen=" addr
+Plain (non-TLS) address and port to listen on.
+May be specified more than once to listen on multiple addresses.
+IPv6 addresses must use bracket notation (see
+.BR IPv6 ).
+Default:
+.BR 127.0.0.1:389 .
+.TP
+.BI \-\-tls\-listen= addr
+TLS address and port to listen on.
+May be specified more than once.
+Requires
+.B \-\-tls\-cert
+and
+.BR \-\-tls\-key .
+.TP
+.BI \-b " dn" ", \-\-base\-dn=" dn
+LDAP base DN, for example
+.BR dc=example,dc=com .
+If omitted,
+.B pwldapd
+derives the base DN from the system's fully-qualified hostname (see
+.BR "BASE DN DERIVATION" ).
+.TP
+.BI \-u " range" ", \-\-uid\-range=" range
+Restrict served user accounts to this UID range.
+.I range
+is either a single UID
+.RI ( N )
+or an inclusive range
+.RI ( N\-M ).
+May be repeated to allow multiple disjoint ranges.
+Default:
+.BR 1000\-65535 .
+.TP
+.BI \-g " range" ", \-\-gid\-range=" range
+Restrict served groups to this GID range.
+.I range
+follows the same format as
+.BR \-\-uid\-range .
+May be repeated.
+If omitted, all groups are served.
+The primary group of every served user is always included regardless of
+this setting, so that
+.B gidNumber
+in user entries always resolves to a visible group.
+.TP
+.BI \-\-tls\-cert= file
+Path to a PEM-encoded TLS certificate (or certificate chain).
+Must be given together with
+.BR \-\-tls\-key .
+.TP
+.BI \-\-tls\-key= file
+Path to a PEM-encoded TLS private key.
+Must be given together with
+.BR \-\-tls\-cert .
+.
+.SH BASE DN DERIVATION
+When
+.B \-\-base\-dn
+is not specified,
+.B pwldapd
+derives the base DN from the system hostname:
+.IP 1. 4
+Call
+.BR gethostname (2)
+to obtain the local hostname.
+.IP 2. 4
+If the hostname contains at least one dot and the domain portion is not
+.B local
+or
+.BR localdomain ,
+convert the full hostname to a base DN by splitting on dots and
+prepending each component with
+.BR dc= .
+For example,
+.B server.example.com
+becomes
+.BR dc=server,dc=example,dc=com .
+.IP 3. 4
+If the hostname is unqualified (no dot), attempt a DNS canonical-name
+lookup via
+.BR getaddrinfo (3)
+with
+.B AI_CANONNAME
+and repeat step\ 2 with the returned FQDN.
+.PP
+If the base DN cannot be determined,
+.B pwldapd
+exits with an error and the operator must supply
+.BR \-\-base\-dn .
+.
+.SH IPv6
+IPv6 addresses must be enclosed in square brackets:
+.PP
+.RS
+.nf
+pwldapd \-\-listen [::1]:389
+pwldapd \-\-listen [::]:389
+.fi
+.RE
+.
+.SH TLS (LDAPS)
+.B pwldapd
+supports TLS via the LDAPS convention (a separate port, typically 636,
+where TLS is negotiated immediately upon connection).
+StartTLS is not supported.
+.PP
+To enable TLS, supply both
+.B \-\-tls\-cert
+and
+.B \-\-tls\-key
+together with one or more
+.B \-\-tls\-listen
+addresses:
+.PP
+.RS
+.nf
+pwldapd \-\-tls\-listen [::]:636 \e
+        \-\-tls\-cert /etc/ssl/certs/ldap.pem \e
+        \-\-tls\-key  /etc/ssl/private/ldap.key
+.fi
+.RE
+.PP
+Plain and TLS listeners can coexist:
+.PP
+.RS
+.nf
+pwldapd \-\-listen 127.0.0.1:389 \e
+        \-\-tls\-listen [::]:636  \e
+        \-\-tls\-cert /etc/ssl/certs/ldap.pem \e
+        \-\-tls\-key  /etc/ssl/private/ldap.key
+.fi
+.RE
+.
+.SH PAM CONFIGURATION
+.B pwldapd
+authenticates bind requests via PAM using the service name
+.BR pwldapd .
+The file
+.B /etc/pam.d/pwldapd
+must exist before any authenticated bind is attempted; without it PAM
+falls back to
+.BR /etc/pam.d/other ,
+which on most systems denies all access.
+.PP
+A minimal configuration delegating to the standard system auth stack:
+.PP
+.RS
+.nf
+auth     required   pam_unix.so
+account  required   pam_unix.so
+.fi
+.RE
+.PP
+On systems that use the include-based layout:
+.PP
+.RS
+.nf
+@include common-auth
+@include common-account
+.fi
+.RE
+.PP
+Using a dedicated PAM service allows LDAP-specific policies such as
+per-service failure delays, audit logging, or restricting which accounts
+may bind via LDAP.
+.
+.SH GECOS PARSING
+The GECOS field is interpreted as up to five comma-separated values in the
+traditional BSD format:
+.PP
+.RS
+.I "Full Name,Room Number,Work Phone,Home Phone,Other"
+.RE
+.PP
+The full name becomes the
+.BR cn ,
+.BR sn ,
+and (when two or more words are present)
+.B givenName
+attributes.
+.BR roomNumber ,
+.BR telephoneNumber ,
+and
+.B homePhone
+are set from fields 1, 2, and 3 respectively when non-empty.
+The fifth field has no standard LDAP mapping and is ignored.
+.
+.SH LISTENING ON PORT 389
+Port 389 requires elevated privileges.
+The recommended approach is to grant the binary the
+.B CAP_NET_BIND_SERVICE
+capability rather than running as root:
+.PP
+.RS
+.nf
+sudo setcap cap_net_bind_service=ep /usr/local/sbin/pwldapd
+.fi
+.RE
+.PP
+Alternatively, configure a firewall redirect from a high port:
+.PP
+.RS
+.nf
+iptables \-t nat \-A PREROUTING \-p tcp \-\-dport 389 \e
+    \-j REDIRECT \-\-to\-port 3389
+.fi
+.RE
+.PP
+Or use a service manager that provides socket activation.
+.
+.SH LOGGING
+Log verbosity is controlled by the
+.B RUST_LOG
+environment variable.
+The default level is
+.BR info ,
+which logs listener startup, each new connection, and all bind outcomes.
+.PP
+To enable debug logging for
+.B pwldapd
+only:
+.PP
+.RS
+.nf
+RUST_LOG=pwldapd=debug pwldapd
+.fi
+.RE
+.PP
+To enable debug logging for all crates:
+.PP
+.RS
+.nf
+RUST_LOG=debug pwldapd
+.fi
+.RE
+.
+.SH LIMITATIONS
+.B pwldapd
+is intentionally a read-only LDAP front-end.
+The following features are not supported:
+.IP \(bu 4
+Write operations (Add, Delete, Modify, ModifyDN).
+.IP \(bu 4
+SASL authentication.
+.IP \(bu 4
+StartTLS (use a dedicated LDAPS port instead).
+.IP \(bu 4
+Referrals or server-side sorting.
+.IP \(bu 4
+Persistent searches or change notifications.
+.IP \(bu 4
+Server-enforced size limits or time limits (client-requested values are
+accepted on the wire but ignored).
+.
+.SH ENVIRONMENT
+.TP
+.B RUST_LOG
+Controls log verbosity.
+See
+.BR LOGGING .
+.
+.SH FILES
+.TP
+.B /etc/pam.d/pwldapd
+PAM service configuration for bind authentication.
+Must be created before starting the daemon.
+.
+.SH EXAMPLES
+Serve local users on the loopback with default settings:
+.PP
+.RS
+.nf
+pwldapd
+.fi
+.RE
+.PP
+Serve on all interfaces with a custom base DN and UID range:
+.PP
+.RS
+.nf
+pwldapd \-\-listen [::]:389 \e
+        \-\-base\-dn dc=corp,dc=example,dc=com \e
+        \-\-uid\-range 2000\-9999
+.fi
+.RE
+.PP
+LDAPS only, accepting connections from the network:
+.PP
+.RS
+.nf
+pwldapd \-\-listen "" \e
+        \-\-tls\-listen [::]:636 \e
+        \-\-tls\-cert /etc/ssl/certs/ldap.pem \e
+        \-\-tls\-key  /etc/ssl/private/ldap.key
+.fi
+.RE
+.PP
+Point an NSS/LDAP client at a running instance:
+.PP
+.RS
+.nf
+uri     ldap://127.0.0.1/
+base    dc=host,dc=example,dc=com
+.fi
+.RE
+(Replace the base DN with whatever
+.B pwldapd
+logs at startup.)
+.
+.SH SEE ALSO
+.BR slapd (8),
+.BR nslcd (8),
+.BR sssd (8),
+.BR pam (7),
+.BR nsswitch.conf (5),
+.BR getpwent (3),
+.BR getgrent (3)
+.
+.SH AUTHORS
+Michael Paddon <michael@paddon.org>
