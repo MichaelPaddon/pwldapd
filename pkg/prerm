@@ -1,0 +1,14 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    remove|deconfigure)
+        # Clear file capabilities before the binary is removed so that
+        # the package database stays consistent.
+        if command -v setcap > /dev/null 2>&1; then
+            setcap -r /usr/sbin/pwldapd 2>/dev/null || true
+        fi
+        ;;
+esac
+
+#DEBHELPER#
