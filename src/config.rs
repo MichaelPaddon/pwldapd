@@ -114,56 +114,34 @@ pub fn load_file_config(path: &Path) -> Result<FileConfig> {
 // Config merging
 // ---------------------------------------------------------------------------
 
-/// Merge CLI arguments with an optional file config to produce a `Config`.
-///
-/// Precedence (highest to lowest):
-///   1. CLI argument (explicit on the command line)
-///   2. Config file value
-///   3. Hardcoded default
-///
-/// The `Cli` type is passed in from main.rs; it mirrors the clap struct but
-/// is defined here to keep all merging logic in one place.
-pub fn merge_config(cli: crate::Cli, file: Option<FileConfig>) -> Result<Config> {
+/// Build a `Config` from an optional file config, applying hardcoded defaults
+/// for any fields not present in the file.
+pub fn merge_config(file: Option<FileConfig>) -> Result<Config> {
     let fc = file.unwrap_or_default();
 
-    // Listen addresses: CLI wins if non-empty, else file, else default.
-    let listen = if !cli.listen.is_empty() {
-        cli.listen
-    } else {
-        fc.listen.unwrap_or_else(|| vec!["127.0.0.1:389".into()])
-    };
+    let listen = fc.listen.unwrap_or_else(|| vec!["127.0.0.1:389".into()]);
+    let tls_listen = fc.tls_listen.unwrap_or_default();
 
-    let tls_listen = if !cli.tls_listen.is_empty() {
-        cli.tls_listen
-    } else {
-        fc.tls_listen.unwrap_or_default()
-    };
-
-    let base_dn = cli.base_dn
-        .or(fc.base_dn)
+    let base_dn = fc.base_dn
         .map(Ok)
         .unwrap_or_else(derive_base_dn)?;
 
-    let uid_ranges: Vec<RangeInclusive<u32>> = if !cli.uid_ranges.is_empty() {
-        cli.uid_ranges.into_iter().map(|r| r.0).collect()
-    } else if let Some(ranges) = fc.uid_ranges {
-        ranges.into_iter().map(|r| r.0).collect()
-    } else {
-        vec![1000..=65535]
-    };
+    let uid_ranges: Vec<RangeInclusive<u32>> = fc.uid_ranges
+        .map(|v| v.into_iter().map(|r| r.0).collect())
+        .unwrap_or_else(|| vec![1000..=65535]);
 
-    let gid_ranges: Vec<RangeInclusive<u32>> = if !cli.gid_ranges.is_empty() {
-        cli.gid_ranges.into_iter().map(|r| r.0).collect()
-    } else {
-        fc.gid_ranges
-            .unwrap_or_default()
-            .into_iter()
-            .map(|r| r.0)
-            .collect()
-    };
+    let gid_ranges: Vec<RangeInclusive<u32>> = fc.gid_ranges
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| r.0)
+        .collect();
 
-    let tls_cert = cli.tls_cert.or(fc.tls_cert);
-    let tls_key  = cli.tls_key.or(fc.tls_key);
+    let tls_cert = fc.tls_cert;
+    let tls_key  = fc.tls_key;
+
+    if !tls_listen.is_empty() && (tls_cert.is_none() || tls_key.is_none()) {
+        anyhow::bail!("tls_listen requires tls_cert and tls_key");
+    }
 
     let user_attributes =
         build_attr_values(fc.user_attributes.unwrap_or_default())?;

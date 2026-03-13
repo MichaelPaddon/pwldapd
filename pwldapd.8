@@ -7,20 +7,6 @@ pwldapd \- LDAP daemon backed by the local POSIX user and group database
 .B pwldapd
 .RB [ \-c
 .IR file ]
-.RB [ \-l
-.IR addr ]
-.RB [ \-\-tls\-listen
-.IR addr ]
-.RB [ \-b
-.IR dn ]
-.RB [ \-u
-.IR range ]
-.RB [ \-g
-.IR range ]
-.RB [ \-\-tls\-cert
-.IR file ]
-.RB [ \-\-tls\-key
-.IR file ]
 .
 .SH DESCRIPTION
 .B pwldapd
@@ -99,70 +85,17 @@ carries:
 .TP
 .BI \-c " file" ", \-\-config=" file
 Path to a TOML configuration file.
-All options listed below can be set in the file; a command-line argument
-always takes precedence over the corresponding file value.
 See
 .B CONFIGURATION FILE
 for the file format and
 .B USER ATTRIBUTES
 for the attribute extension syntax.
-.TP
-.BI \-l " addr" ", \-\-listen=" addr
-Plain (non-TLS) address and port to listen on.
-May be specified more than once to listen on multiple addresses.
-IPv6 addresses must use bracket notation (see
-.BR IPv6 ).
-Default:
-.BR 127.0.0.1:389 .
-.TP
-.BI \-\-tls\-listen= addr
-TLS address and port to listen on.
-May be specified more than once.
-Requires
-.B \-\-tls\-cert
-and
-.BR \-\-tls\-key .
-.TP
-.BI \-b " dn" ", \-\-base\-dn=" dn
-LDAP base DN, for example
-.BR dc=example,dc=com .
-If omitted,
+When this option is omitted,
 .B pwldapd
-derives the base DN from the system's fully-qualified hostname (see
-.BR "BASE DN DERIVATION" ).
-.TP
-.BI \-u " range" ", \-\-uid\-range=" range
-Restrict served user accounts to this UID range.
-.I range
-is either a single UID
-.RI ( N )
-or an inclusive range
-.RI ( N\-M ).
-May be repeated to allow multiple disjoint ranges.
-Default:
+starts with built-in defaults: listening on
+.B 127.0.0.1:389
+with the base DN derived from the system hostname and UID range
 .BR 1000\-65535 .
-.TP
-.BI \-g " range" ", \-\-gid\-range=" range
-Restrict served groups to this GID range.
-.I range
-follows the same format as
-.BR \-\-uid\-range .
-May be repeated.
-If omitted, all groups are served.
-The primary group of every served user is always included regardless of
-this setting, so that
-.B gidNumber
-in user entries always resolves to a visible group.
-.TP
-.BI \-\-tls\-cert= file
-Path to a PEM-encoded TLS certificate (or certificate chain).
-Must be given together with
-.BR \-\-tls\-key .
-.TP
-.BI \-\-tls\-key= file
-Path to a PEM-encoded TLS private key.
-Must be given together with
-.BR \-\-tls\-cert .
 .
 .SH CONFIGURATION FILE
 .B pwldapd
@@ -511,33 +444,18 @@ pwldapd \-\-config /etc/pwldapd.conf
 .fi
 .RE
 .PP
-Override the listen address from the command line while still using the
-rest of the config file:
+Typical
+.B /etc/pwldapd.conf
+serving on all interfaces with TLS:
 .PP
 .RS
 .nf
-pwldapd \-\-config /etc/pwldapd.conf \-\-listen 127.0.0.1:389
-.fi
-.RE
-.PP
-Serve on all interfaces with a custom base DN and UID range:
-.PP
-.RS
-.nf
-pwldapd \-\-listen [::]:389 \e
-        \-\-base\-dn dc=corp,dc=example,dc=com \e
-        \-\-uid\-range 2000\-9999
-.fi
-.RE
-.PP
-LDAPS only, accepting connections from the network:
-.PP
-.RS
-.nf
-pwldapd \-\-listen "" \e
-        \-\-tls\-listen [::]:636 \e
-        \-\-tls\-cert /etc/ssl/certs/ldap.pem \e
-        \-\-tls\-key  /etc/ssl/private/ldap.key
+listen     = ["[::]:389"]
+tls_listen = ["[::]:636"]
+base_dn    = "dc=corp,dc=example,dc=com"
+uid_ranges = ["2000\-9999"]
+tls_cert   = "/etc/ssl/certs/ldap.pem"
+tls_key    = "/etc/ssl/private/ldap.key"
 .fi
 .RE
 .PP

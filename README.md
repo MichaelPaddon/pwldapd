@@ -66,26 +66,16 @@ sudo systemctl start pwldapd
 ## Usage
 
 ```
-pwldapd [OPTIONS]
+pwldapd [-c FILE]
 ```
 
-### Options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `-c`, `--config FILE` | — | TOML configuration file; CLI args override file values |
-| `-l`, `--listen ADDR` | `127.0.0.1:389` | Plain (non-TLS) address to listen on; may be repeated |
-| `--tls-listen ADDR` | — | TLS address to listen on; may be repeated; requires `--tls-cert` and `--tls-key` |
-| `-b`, `--base-dn DN` | derived from hostname | LDAP base DN |
-| `-u`, `--uid-range N[-M]` | `1000-65535` | Restrict served accounts to this UID range; may be repeated |
-| `-g`, `--gid-range N[-M]` | — | Restrict served groups to this GID range; may be repeated; primary groups of served users are always included |
-| `--tls-cert FILE` | — | PEM certificate for LDAPS (requires `--tls-key`) |
-| `--tls-key FILE` | — | PEM private key for LDAPS (requires `--tls-cert`) |
+Without a config file, `pwldapd` starts with built-in defaults: listening on
+`127.0.0.1:389`, base DN derived from the system hostname, and UID range
+`1000-65535`. All other options require a configuration file.
 
 ### Configuration file
 
-All options can be set in a TOML file and loaded with `--config`. CLI
-arguments take precedence over file values. An example covering every
+Load a TOML configuration file with `--config`. An example covering every
 option:
 
 ```toml
@@ -139,19 +129,18 @@ rules. Templates are not supported in per-user overrides.
 
 ### Base DN
 
-If `--base-dn` is not given (and not set in the config file), the base DN
-is derived from the fully-qualified hostname. For example, on a host named
-`server.example.com` the base DN becomes `dc=server,dc=example,dc=com`. If
-the hostname is unqualified, `pwldapd` attempts a DNS canonical-name lookup
-to find the FQDN.
+If `base_dn` is not set in the config file, the base DN is derived from the
+fully-qualified hostname. For example, on a host named `server.example.com`
+the base DN becomes `dc=server,dc=example,dc=com`. If the hostname is
+unqualified, `pwldapd` attempts a DNS canonical-name lookup to find the FQDN.
 
 ### IPv6
 
-Use bracket notation for IPv6 addresses:
+Use bracket notation for IPv6 addresses in `listen` and `tls_listen`:
 
-```
-pwldapd --listen [::1]:389
-pwldapd --listen [::]:389
+```toml
+listen     = ["[::1]:389"]
+tls_listen = ["[::]:636"]
 ```
 
 ### Listening on port 389
@@ -168,51 +157,28 @@ under a service manager that provides socket activation.
 
 ### TLS (LDAPS)
 
-Use `--tls-listen` with a PEM certificate and private key to accept TLS
-connections. The standard LDAPS port is 636:
+Set `tls_listen`, `tls_cert`, and `tls_key` in the config file to accept TLS
+connections. Plain and TLS listeners can run together:
 
-```
-pwldapd --tls-listen [::]:636 \
-        --tls-cert /etc/ssl/certs/ldap.pem \
-        --tls-key  /etc/ssl/private/ldap.key
-```
-
-Plain and TLS listeners can run together. The `--listen` and `--tls-listen`
-options may each be repeated any number of times:
-
-```
-pwldapd --listen 127.0.0.1:389 \
-        --tls-listen [::]:636  \
-        --tls-cert /etc/ssl/certs/ldap.pem \
-        --tls-key  /etc/ssl/private/ldap.key
+```toml
+listen     = ["127.0.0.1:389"]
+tls_listen = ["[::]:636"]
+tls_cert   = "/etc/ssl/certs/ldap.pem"
+tls_key    = "/etc/ssl/private/ldap.key"
 ```
 
-### UID ranges
+### UID and GID ranges
 
-Use `--uid-range` to limit which accounts are served. The option may be
-repeated to allow multiple disjoint ranges:
+Use `uid_ranges` and `gid_ranges` to limit which accounts and groups are
+served. Multiple disjoint ranges are supported:
 
-```
-# Serve only regular user accounts
-pwldapd --uid-range 1000-65535
-
-# Serve two specific service accounts as well
-pwldapd --uid-range 1000-65535 --uid-range 200 --uid-range 201
+```toml
+uid_ranges = ["1000-65535", "200", "201"]
+gid_ranges = ["1000-65535"]
 ```
 
-### GID ranges
-
-Use `--gid-range` to limit which groups are served. Without this option all
-groups are served. Primary groups of served users are always visible regardless
-of the GID range, so that user entries always have a resolvable `gidNumber`.
-
-```
-# Serve only groups in the regular user range
-pwldapd --gid-range 1000-65535
-
-# Serve two specific service groups as well
-pwldapd --gid-range 1000-65535 --gid-range 200 --gid-range 201
-```
+Without `gid_ranges`, all groups are served. Primary groups of served users
+are always visible regardless of the GID range.
 
 ### Logging
 
@@ -253,7 +219,7 @@ features are not supported:
   not handled.
 - **SASL authentication** — only simple binds (anonymous or
   username/password) are supported.
-- **StartTLS** — use a dedicated LDAPS port (`--tls-listen`) instead.
+- **StartTLS** — use a dedicated LDAPS port (`tls_listen`) instead.
 - **Referrals and server-side sorting.**
 - **Size and time limits** — client-requested values are accepted on the
   wire but not enforced.
