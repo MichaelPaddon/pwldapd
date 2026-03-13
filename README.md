@@ -70,8 +70,8 @@ pwldapd [-c FILE]
 ```
 
 Without a config file, `pwldapd` starts with built-in defaults: listening on
-`127.0.0.1:389`, base DN derived from the system hostname, and UID range
-`1000-65535`. All other options require a configuration file.
+`127.0.0.1:389`, base DN derived from the system hostname, and all UIDs and
+GIDs served. All other options require a configuration file.
 
 ### Configuration file
 

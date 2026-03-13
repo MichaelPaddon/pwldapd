@@ -127,8 +127,10 @@ pub fn merge_config(file: Option<FileConfig>) -> Result<Config> {
         .unwrap_or_else(derive_base_dn)?;
 
     let uid_ranges: Vec<RangeInclusive<u32>> = fc.uid_ranges
-        .map(|v| v.into_iter().map(|r| r.0).collect())
-        .unwrap_or_else(|| vec![1000..=65535]);
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| r.0)
+        .collect();
 
     let gid_ranges: Vec<RangeInclusive<u32>> = fc.gid_ranges
         .unwrap_or_default()

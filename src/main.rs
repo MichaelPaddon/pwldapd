@@ -48,20 +48,21 @@ async fn main() -> Result<()> {
 
     let cfg = config::merge_config(file_config)?;
 
-    let uid_ranges_s: Vec<String> = cfg.uid_ranges.iter()
-        .map(|r| format!("{}-{}", r.start(), r.end()))
-        .collect();
-    let gid_ranges_s: Vec<String> = cfg.gid_ranges.iter()
-        .map(|r| format!("{}-{}", r.start(), r.end()))
-        .collect();
-    let gid_ranges_display = if gid_ranges_s.is_empty() {
-        "all".to_string()
-    } else {
-        gid_ranges_s.join(",")
+    let fmt_ranges = |ranges: &[std::ops::RangeInclusive<u32>]| -> String {
+        if ranges.is_empty() {
+            "all".to_string()
+        } else {
+            ranges.iter()
+                .map(|r| format!("{}-{}", r.start(), r.end()))
+                .collect::<Vec<_>>()
+                .join(",")
+        }
     };
     info!(
         "base_dn={} uid_ranges={} gid_ranges={}",
-        cfg.base_dn, uid_ranges_s.join(","), gid_ranges_display
+        cfg.base_dn,
+        fmt_ranges(&cfg.uid_ranges),
+        fmt_ranges(&cfg.gid_ranges),
     );
 
     pam_auth::check_pam_service();
