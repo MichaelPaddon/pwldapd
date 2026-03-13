@@ -21,7 +21,8 @@ pub async fn run(config: Config) -> Result<()> {
     let mut set: JoinSet<Result<()>> = JoinSet::new();
 
     for addr in &config.listen {
-        let listener = TcpListener::bind(addr).await?;
+        let listener = TcpListener::bind(addr).await
+            .map_err(|e| annotate_bind_error(e, addr))?;
         info!("Listening on {addr}");
         let cfg = config.clone();
         set.spawn(accept_plain(listener, cfg));
@@ -30,7 +31,8 @@ pub async fn run(config: Config) -> Result<()> {
     for addr in &config.tls_listen {
         let acceptor = tls_acceptor.clone()
             .expect("tls_acceptor set when tls_listen is non-empty");
-        let listener = TcpListener::bind(addr).await?;
+        let listener = TcpListener::bind(addr).await
+            .map_err(|e| annotate_bind_error(e, addr))?;
         info!("Listening on {addr} (TLS)");
         let cfg = config.clone();
         set.spawn(accept_tls(listener, acceptor, cfg));
@@ -105,6 +107,29 @@ fn load_certs(
     let file = std::fs::File::open(path)?;
     let mut reader = std::io::BufReader::new(file);
     Ok(rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>()?)
+}
+
+fn annotate_bind_error(e: std::io::Error, addr: &str) -> anyhow::Error {
+    if e.kind() == std::io::ErrorKind::PermissionDenied {
+        // Parse the port from the address to give a targeted hint.
+        let port: Option<u16> = addr
+            .rsplit(':')
+            .next()
+            .and_then(|p| p.trim_end_matches(']').parse().ok());
+        if port.map_or(false, |p| p < 1024) {
+            return anyhow::anyhow!(
+                "cannot bind to {addr}: permission denied\n\
+                 Port {} requires elevated privileges. Either:\n\
+                 \x20 sudo setcap cap_net_bind_service=ep {}\n\
+                 or set a high port in the config file (listen = [\"127.0.0.1:3389\"])",
+                port.unwrap(),
+                std::env::current_exe()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| "pwldapd".into()),
+            );
+        }
+    }
+    anyhow::anyhow!("cannot bind to {addr}: {e}")
 }
 
 fn load_private_key(
