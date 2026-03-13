@@ -1,4 +1,5 @@
 /// Per-connection LDAP request handler.
+use crate::config::{AttrValue, PROTECTED_ATTRS};
 use crate::ber;
 use crate::config::Config;
 use crate::ldap::{
@@ -360,8 +361,8 @@ fn user_entry(u: &passwd::User, config: &Config) -> SearchResultEntry {
             ],
         ),
         ("uid".into(), vec![u.name.clone()]),
-        ("cn".into(), vec![cn]),
-        ("sn".into(), vec![sn]),
+        ("cn".into(), vec![cn.clone()]),
+        ("sn".into(), vec![sn.clone()]),
         ("uidNumber".into(), vec![u.uid.to_string()]),
         ("gidNumber".into(), vec![u.gid.to_string()]),
         ("homeDirectory".into(), vec![u.home_dir.clone()]),
@@ -380,6 +381,7 @@ fn user_entry(u: &passwd::User, config: &Config) -> SearchResultEntry {
     if let Some(v) = gecos_field(3) {
         attrs.push(("homePhone".into(), vec![v.to_string()]));
     }
+    apply_user_attributes(&mut attrs, u, &cn, &sn, config);
     SearchResultEntry { dn, attributes: attrs }
 }
 
@@ -394,6 +396,116 @@ fn group_entry(g: &passwd::Group, config: &Config) -> SearchResultEntry {
         attrs.push(("memberUid".into(), g.members.clone()));
     }
     SearchResultEntry { dn, attributes: attrs }
+}
+
+// Attribute extension
+
+/// Expand `{placeholder}` sequences in `template` using the given user fields.
+/// All known placeholders are substituted; unrecognised ones are left as-is
+/// (templates are validated at startup so this path is unreachable in practice).
+fn expand_template(
+    template: &str,
+    user: &passwd::User,
+    cn: &str,
+    sn: &str,
+) -> String {
+    let uid_n = user.uid.to_string();
+    let gid_n = user.gid.to_string();
+    let vars: &[(&str, &str)] = &[
+        ("uid",           &user.name),
+        ("cn",            cn),
+        ("sn",            sn),
+        ("uidNumber",     &uid_n),
+        ("gidNumber",     &gid_n),
+        ("homeDirectory", &user.home_dir),
+        ("shell",         &user.shell),
+        ("gecos",         &user.gecos),
+    ];
+    let mut result = template.to_string();
+    for (key, val) in vars {
+        result = result.replace(&format!("{{{key}}}"), val);
+    }
+    result
+}
+
+/// Apply `config.user_attributes` and per-user overrides to an in-progress
+/// attribute list. Called at the end of `user_entry()`.
+///
+/// Precedence (highest first):
+///   1. `config.user_overrides[username][attr]` — fixed string
+///   2. `config.user_attributes[attr]` — template or fixed string
+///   3. Built-in attributes assembled earlier (may be replaced except for
+///      protected attrs: objectClass, uid, uidNumber, gidNumber)
+fn apply_user_attributes(
+    attrs: &mut Vec<(String, Vec<String>)>,
+    user: &passwd::User,
+    cn: &str,
+    sn: &str,
+    config: &Config,
+) {
+    // Track which attribute names were handled via user_attributes so we
+    // can skip them when processing the remaining per-user overrides.
+    let mut handled: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+
+    for (attr_name, attr_val) in &config.user_attributes {
+        // Skip protected attributes with a one-time warning.
+        if PROTECTED_ATTRS.iter().any(|p| p.eq_ignore_ascii_case(attr_name)) {
+            warn!(
+                "user_attributes: {attr_name} is protected and cannot be \
+                 overridden; skipping"
+            );
+            continue;
+        }
+        handled.insert(attr_name.to_lowercase());
+
+        // Resolve the value: check per-user override first, then the general rule.
+        let value = if let Some(ov) = config.user_overrides
+            .get(&user.name)
+            .and_then(|m| m.get(attr_name))
+        {
+            ov.clone()
+        } else {
+            match attr_val {
+                AttrValue::Fixed(s) => s.clone(),
+                AttrValue::Template(t) => expand_template(t, user, cn, sn),
+            }
+        };
+
+        // Replace an existing attribute or append a new one.
+        if let Some(existing) = attrs.iter_mut()
+            .find(|(k, _)| k.eq_ignore_ascii_case(attr_name))
+        {
+            existing.1 = vec![value];
+        } else {
+            attrs.push((attr_name.clone(), vec![value]));
+        }
+    }
+
+    // Apply any per-user overrides whose keys were not covered by
+    // user_attributes above.
+    if let Some(overrides) = config.user_overrides.get(&user.name) {
+        for (attr_name, value) in overrides {
+            if handled.contains(&attr_name.to_lowercase()) {
+                continue;
+            }
+            if PROTECTED_ATTRS.iter().any(|p| p.eq_ignore_ascii_case(attr_name)) {
+                warn!(
+                    "user_overrides.{}: {attr_name} is protected and cannot \
+                     be overridden; skipping",
+                    user.name
+                );
+                continue;
+            }
+            if let Some(existing) = attrs.iter_mut()
+                .find(|(k, _)| k.eq_ignore_ascii_case(attr_name))
+            {
+                existing.1 = vec![value.clone()];
+            } else {
+                attrs.push((attr_name.clone(), vec![value.clone()]));
+            }
+        }
+    }
 }
 
 // Helpers
@@ -463,6 +575,8 @@ mod tests {
             gid_ranges: vec![],
             tls_cert: None,
             tls_key: None,
+            user_attributes: vec![],
+            user_overrides: std::collections::HashMap::new(),
         }
     }
 
@@ -477,6 +591,8 @@ mod tests {
             gid_ranges: vec![],
             tls_cert: None,
             tls_key: None,
+            user_attributes: vec![],
+            user_overrides: std::collections::HashMap::new(),
         }
     }
 
@@ -491,6 +607,8 @@ mod tests {
             gid_ranges: ranges,
             tls_cert: None,
             tls_key: None,
+            user_attributes: vec![],
+            user_overrides: std::collections::HashMap::new(),
         }
     }
 
@@ -1029,6 +1147,135 @@ mod tests {
         let entry = user_entry(u, &cfg());
         let selected = select_attributes(&entry, &["*".into()]);
         assert_eq!(selected.attributes.len(), entry.attributes.len());
+    }
+
+    // User attribute extension
+
+    fn alice() -> passwd::User {
+        passwd::User {
+            name: "alice".into(), uid: 1001, gid: 1001,
+            gecos: "Alice Smith,,,".into(),
+            home_dir: "/home/alice".into(),
+            shell: "/bin/bash".into(),
+        }
+    }
+
+    fn cfg_with_user_attrs(
+        attrs: Vec<(String, crate::config::AttrValue)>,
+        overrides: std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+    ) -> Config {
+        Config {
+            listen: vec![],
+            tls_listen: vec![],
+            base_dn: "dc=example,dc=com".into(),
+            uid_ranges: vec![],
+            gid_ranges: vec![],
+            tls_cert: None,
+            tls_key: None,
+            user_attributes: attrs,
+            user_overrides: overrides,
+        }
+    }
+
+    #[test]
+    fn template_attr_expands_uid() {
+        let cfg = cfg_with_user_attrs(
+            vec![(
+                "mail".into(),
+                crate::config::AttrValue::Template("{uid}@example.com".into()),
+            )],
+            std::collections::HashMap::new(),
+        );
+        let entry = user_entry(&alice(), &cfg);
+        assert_eq!(attr_values(&entry, "mail"), vec!["alice@example.com"]);
+    }
+
+    #[test]
+    fn fixed_attr_added() {
+        let cfg = cfg_with_user_attrs(
+            vec![(
+                "department".into(),
+                crate::config::AttrValue::Fixed("Engineering".into()),
+            )],
+            std::collections::HashMap::new(),
+        );
+        let entry = user_entry(&alice(), &cfg);
+        assert_eq!(attr_values(&entry, "department"), vec!["Engineering"]);
+    }
+
+    #[test]
+    fn user_attr_overrides_builtin() {
+        let cfg = cfg_with_user_attrs(
+            vec![(
+                "loginShell".into(),
+                crate::config::AttrValue::Fixed("/bin/zsh".into()),
+            )],
+            std::collections::HashMap::new(),
+        );
+        let entry = user_entry(&alice(), &cfg);
+        assert_eq!(attr_values(&entry, "loginShell"), vec!["/bin/zsh"]);
+    }
+
+    #[test]
+    fn per_user_override_takes_precedence() {
+        let mut overrides = std::collections::HashMap::new();
+        let mut alice_ov = std::collections::HashMap::new();
+        alice_ov.insert("mail".into(), "alice@external.com".into());
+        overrides.insert("alice".into(), alice_ov);
+        let cfg = cfg_with_user_attrs(
+            vec![(
+                "mail".into(),
+                crate::config::AttrValue::Template("{uid}@example.com".into()),
+            )],
+            overrides,
+        );
+        let entry = user_entry(&alice(), &cfg);
+        assert_eq!(attr_values(&entry, "mail"), vec!["alice@external.com"]);
+    }
+
+    #[test]
+    fn per_user_override_without_general_rule() {
+        let mut overrides = std::collections::HashMap::new();
+        let mut alice_ov = std::collections::HashMap::new();
+        alice_ov.insert("title".into(), "Director".into());
+        overrides.insert("alice".into(), alice_ov);
+        let cfg = cfg_with_user_attrs(vec![], overrides);
+        let entry = user_entry(&alice(), &cfg);
+        assert_eq!(attr_values(&entry, "title"), vec!["Director"]);
+    }
+
+    #[test]
+    fn override_for_other_user_not_applied() {
+        let mut overrides = std::collections::HashMap::new();
+        let mut bob_ov = std::collections::HashMap::new();
+        bob_ov.insert("mail".into(), "bob@other.com".into());
+        overrides.insert("bob".into(), bob_ov);
+        let cfg = cfg_with_user_attrs(
+            vec![(
+                "mail".into(),
+                crate::config::AttrValue::Template("{uid}@example.com".into()),
+            )],
+            overrides,
+        );
+        // alice gets the template value, not bob's override
+        let entry = user_entry(&alice(), &cfg);
+        assert_eq!(attr_values(&entry, "mail"), vec!["alice@example.com"]);
+    }
+
+    #[test]
+    fn protected_attr_not_overridden() {
+        let cfg = cfg_with_user_attrs(
+            vec![(
+                "objectClass".into(),
+                crate::config::AttrValue::Fixed("hacker".into()),
+            )],
+            std::collections::HashMap::new(),
+        );
+        let entry = user_entry(&alice(), &cfg);
+        // objectClass must still contain the standard values
+        let oc = attr_values(&entry, "objectClass");
+        assert!(oc.contains(&"posixAccount"));
+        assert!(!oc.contains(&"hacker"));
     }
 }
 

@@ -1,8 +1,13 @@
 use anyhow::{bail, Result};
+use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::ops::RangeInclusive;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::ptr;
+
+// ---------------------------------------------------------------------------
+// Runtime configuration
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -20,6 +25,11 @@ pub struct Config {
     pub tls_cert: Option<PathBuf>,
     /// PEM TLS private key path. Required when tls_listen is non-empty.
     pub tls_key: Option<PathBuf>,
+    /// Extra attributes added to every user entry, in declaration order.
+    pub user_attributes: Vec<(String, AttrValue)>,
+    /// Per-user attribute overrides keyed by username. Fixed strings only;
+    /// these take precedence over user_attributes.
+    pub user_overrides: HashMap<String, HashMap<String, String>>,
 }
 
 impl Config {
@@ -45,7 +55,183 @@ impl Config {
     }
 }
 
-/// A UID range specification parsed from a CLI argument:
+// ---------------------------------------------------------------------------
+// Attribute value: fixed string or template
+// ---------------------------------------------------------------------------
+
+/// A user attribute value: either a literal string or a template containing
+/// `{placeholder}` sequences. Classification is done at config-load time;
+/// a string is a `Template` if it contains `{`, `Fixed` otherwise.
+///
+/// Valid template placeholders:
+/// `{uid}`, `{cn}`, `{sn}`, `{uidNumber}`, `{gidNumber}`,
+/// `{homeDirectory}`, `{shell}`, `{gecos}`
+#[derive(Debug, Clone)]
+pub enum AttrValue {
+    Fixed(String),
+    Template(String),
+}
+
+/// Placeholder names accepted in template attribute values.
+pub const KNOWN_VARS: &[&str] = &[
+    "uid", "cn", "sn", "uidNumber", "gidNumber",
+    "homeDirectory", "shell", "gecos",
+];
+
+/// Attributes that cannot be overridden via config; attempts emit a warning.
+pub const PROTECTED_ATTRS: &[&str] = &["objectClass", "uid", "uidNumber", "gidNumber"];
+
+// ---------------------------------------------------------------------------
+// File config (TOML deserialization)
+// ---------------------------------------------------------------------------
+
+/// Deserializable representation of the TOML config file.
+/// All fields are `Option<>` so the file may omit any subset of them.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileConfig {
+    pub listen:          Option<Vec<String>>,
+    pub tls_listen:      Option<Vec<String>>,
+    pub base_dn:         Option<String>,
+    pub uid_ranges:      Option<Vec<UidRange>>,
+    pub gid_ranges:      Option<Vec<GidRange>>,
+    pub tls_cert:        Option<PathBuf>,
+    pub tls_key:         Option<PathBuf>,
+    pub user_attributes: Option<HashMap<String, String>>,
+    pub user_overrides:  Option<HashMap<String, HashMap<String, String>>>,
+}
+
+/// Load and parse a TOML config file from `path`.
+pub fn load_file_config(path: &Path) -> Result<FileConfig> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("reading config file {:?}: {e}", path))?;
+    let fc: FileConfig = toml::from_str(&text)
+        .map_err(|e| anyhow::anyhow!("parsing config file {:?}: {e}", path))?;
+    Ok(fc)
+}
+
+// ---------------------------------------------------------------------------
+// Config merging
+// ---------------------------------------------------------------------------
+
+/// Merge CLI arguments with an optional file config to produce a `Config`.
+///
+/// Precedence (highest to lowest):
+///   1. CLI argument (explicit on the command line)
+///   2. Config file value
+///   3. Hardcoded default
+///
+/// The `Cli` type is passed in from main.rs; it mirrors the clap struct but
+/// is defined here to keep all merging logic in one place.
+pub fn merge_config(cli: crate::Cli, file: Option<FileConfig>) -> Result<Config> {
+    let fc = file.unwrap_or_default();
+
+    // Listen addresses: CLI wins if non-empty, else file, else default.
+    let listen = if !cli.listen.is_empty() {
+        cli.listen
+    } else {
+        fc.listen.unwrap_or_else(|| vec!["127.0.0.1:389".into()])
+    };
+
+    let tls_listen = if !cli.tls_listen.is_empty() {
+        cli.tls_listen
+    } else {
+        fc.tls_listen.unwrap_or_default()
+    };
+
+    let base_dn = cli.base_dn
+        .or(fc.base_dn)
+        .map(Ok)
+        .unwrap_or_else(derive_base_dn)?;
+
+    let uid_ranges: Vec<RangeInclusive<u32>> = if !cli.uid_ranges.is_empty() {
+        cli.uid_ranges.into_iter().map(|r| r.0).collect()
+    } else if let Some(ranges) = fc.uid_ranges {
+        ranges.into_iter().map(|r| r.0).collect()
+    } else {
+        vec![1000..=65535]
+    };
+
+    let gid_ranges: Vec<RangeInclusive<u32>> = if !cli.gid_ranges.is_empty() {
+        cli.gid_ranges.into_iter().map(|r| r.0).collect()
+    } else {
+        fc.gid_ranges
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| r.0)
+            .collect()
+    };
+
+    let tls_cert = cli.tls_cert.or(fc.tls_cert);
+    let tls_key  = cli.tls_key.or(fc.tls_key);
+
+    let user_attributes =
+        build_attr_values(fc.user_attributes.unwrap_or_default())?;
+    let user_overrides = fc.user_overrides.unwrap_or_default();
+
+    Ok(Config {
+        listen,
+        tls_listen,
+        base_dn,
+        uid_ranges,
+        gid_ranges,
+        tls_cert,
+        tls_key,
+        user_attributes,
+        user_overrides,
+    })
+}
+
+/// Convert the raw `HashMap<String, String>` from the file into typed
+/// `AttrValue`s, validating any template placeholders.
+pub fn build_attr_values(
+    raw: HashMap<String, String>,
+) -> Result<Vec<(String, AttrValue)>> {
+    let mut out = Vec::with_capacity(raw.len());
+    for (name, value) in raw {
+        let av = if value.contains('{') {
+            validate_template(&value, &name)?;
+            AttrValue::Template(value)
+        } else {
+            AttrValue::Fixed(value)
+        };
+        out.push((name, av));
+    }
+    Ok(out)
+}
+
+/// Validate that all `{placeholder}` sequences in `template` are known.
+/// Returns an error naming the bad placeholder and listing valid ones.
+fn validate_template(template: &str, attr_name: &str) -> Result<()> {
+    let mut s = template;
+    while let Some(open) = s.find('{') {
+        s = &s[open + 1..];
+        match s.find('}') {
+            None => bail!(
+                "unclosed '{{' in user_attributes.{attr_name}"
+            ),
+            Some(close) => {
+                let var = &s[..close];
+                if !KNOWN_VARS.contains(&var) {
+                    bail!(
+                        "unknown placeholder {{{var}}} in \
+                         user_attributes.{attr_name}; \
+                         valid variables are: {}",
+                        KNOWN_VARS.join(", ")
+                    );
+                }
+                s = &s[close + 1..];
+            }
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// UID / GID range types
+// ---------------------------------------------------------------------------
+
+/// A UID range specification parsed from a CLI argument or config file:
 /// `N` or `N-M` (inclusive).
 #[derive(Debug, Clone)]
 pub struct UidRange(pub RangeInclusive<u32>);
@@ -57,7 +243,14 @@ impl std::str::FromStr for UidRange {
     }
 }
 
-/// A GID range specification parsed from a CLI argument:
+impl<'de> serde::Deserialize<'de> for UidRange {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+/// A GID range specification parsed from a CLI argument or config file:
 /// `N` or `N-M` (inclusive).
 #[derive(Debug, Clone)]
 pub struct GidRange(pub RangeInclusive<u32>);
@@ -66,6 +259,13 @@ impl std::str::FromStr for GidRange {
     type Err = String;
     fn from_str(s: &str) -> std::result::Result<Self, String> {
         Ok(GidRange(parse_id_range(s, "GID")?))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for GidRange {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        s.parse().map_err(serde::de::Error::custom)
     }
 }
 
@@ -93,6 +293,10 @@ fn parse_id_range(
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Base DN derivation
+// ---------------------------------------------------------------------------
 
 /// Derive the base DN from the system hostname, consulting DNS for the FQDN
 /// if the hostname is unqualified. Returns an error if the domain cannot be
@@ -183,11 +387,29 @@ fn canonical_name(hostname: &str) -> Option<String> {
     name
 }
 
+// ---------------------------------------------------------------------------
 // Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn empty_config() -> Config {
+        Config {
+            listen: vec![],
+            tls_listen: vec![],
+            base_dn: String::new(),
+            uid_ranges: vec![],
+            gid_ranges: vec![],
+            tls_cert: None,
+            tls_key: None,
+            user_attributes: vec![],
+            user_overrides: HashMap::new(),
+        }
+    }
+
+    // Base DN derivation
 
     #[test]
     fn fqdn_derives_base_dn() {
@@ -255,21 +477,9 @@ mod tests {
 
     // Config::uid_allowed and gid_allowed
 
-    fn cfg_with_ranges(ranges: &[RangeInclusive<u32>]) -> Config {
-        Config {
-            listen: vec![],
-            tls_listen: vec![],
-            base_dn: String::new(),
-            uid_ranges: ranges.to_vec(),
-            gid_ranges: vec![],
-            tls_cert: None,
-            tls_key: None,
-        }
-    }
-
     #[test]
     fn uid_allowed_no_ranges_permits_all() {
-        let cfg = cfg_with_ranges(&[]);
+        let cfg = empty_config();
         assert!(cfg.uid_allowed(0));
         assert!(cfg.uid_allowed(1000));
         assert!(cfg.uid_allowed(u32::MAX));
@@ -277,7 +487,8 @@ mod tests {
 
     #[test]
     fn uid_allowed_single_range() {
-        let cfg = cfg_with_ranges(&[1000..=65535]);
+        let mut cfg = empty_config();
+        cfg.uid_ranges = vec![1000..=65535];
         assert!(!cfg.uid_allowed(0));
         assert!(!cfg.uid_allowed(999));
         assert!(cfg.uid_allowed(1000));
@@ -287,7 +498,8 @@ mod tests {
 
     #[test]
     fn uid_allowed_multiple_ranges() {
-        let cfg = cfg_with_ranges(&[1000..=1999, 3000..=3999]);
+        let mut cfg = empty_config();
+        cfg.uid_ranges = vec![1000..=1999, 3000..=3999];
         assert!(cfg.uid_allowed(1000));
         assert!(cfg.uid_allowed(1999));
         assert!(!cfg.uid_allowed(2000));
@@ -297,27 +509,16 @@ mod tests {
 
     #[test]
     fn uid_allowed_single_uid_range() {
-        let cfg = cfg_with_ranges(&[1001..=1001]);
+        let mut cfg = empty_config();
+        cfg.uid_ranges = vec![1001..=1001];
         assert!(cfg.uid_allowed(1001));
         assert!(!cfg.uid_allowed(1000));
         assert!(!cfg.uid_allowed(1002));
     }
 
-    fn cfg_with_gid_ranges(ranges: &[RangeInclusive<u32>]) -> Config {
-        Config {
-            listen: vec![],
-            tls_listen: vec![],
-            base_dn: String::new(),
-            uid_ranges: vec![],
-            gid_ranges: ranges.to_vec(),
-            tls_cert: None,
-            tls_key: None,
-        }
-    }
-
     #[test]
     fn gid_allowed_no_ranges_permits_all() {
-        let cfg = cfg_with_gid_ranges(&[]);
+        let cfg = empty_config();
         assert!(cfg.gid_allowed(0));
         assert!(cfg.gid_allowed(1000));
         assert!(cfg.gid_allowed(u32::MAX));
@@ -325,7 +526,8 @@ mod tests {
 
     #[test]
     fn gid_allowed_single_range() {
-        let cfg = cfg_with_gid_ranges(&[1000..=65535]);
+        let mut cfg = empty_config();
+        cfg.gid_ranges = vec![1000..=65535];
         assert!(!cfg.gid_allowed(0));
         assert!(!cfg.gid_allowed(999));
         assert!(cfg.gid_allowed(1000));
@@ -335,10 +537,91 @@ mod tests {
 
     #[test]
     fn gid_allowed_multiple_ranges() {
-        let cfg = cfg_with_gid_ranges(&[100..=199, 300..=399]);
+        let mut cfg = empty_config();
+        cfg.gid_ranges = vec![100..=199, 300..=399];
         assert!(cfg.gid_allowed(100));
         assert!(!cfg.gid_allowed(200));
         assert!(cfg.gid_allowed(300));
         assert!(!cfg.gid_allowed(400));
+    }
+
+    // Template validation
+
+    #[test]
+    fn valid_template_accepted() {
+        assert!(validate_template("{uid}@example.com", "mail").is_ok());
+        assert!(validate_template("{uid}-{uidNumber}", "x").is_ok());
+        assert!(validate_template("no placeholders", "x").is_ok());
+    }
+
+    #[test]
+    fn unknown_placeholder_rejected() {
+        assert!(validate_template("{email}@example.com", "mail").is_err());
+    }
+
+    #[test]
+    fn unclosed_brace_rejected() {
+        assert!(validate_template("{uid", "mail").is_err());
+    }
+
+    // build_attr_values
+
+    #[test]
+    fn build_attr_values_classifies_correctly() {
+        let raw: HashMap<String, String> = [
+            ("mail".to_string(), "{uid}@example.com".to_string()),
+            ("dept".to_string(), "Engineering".to_string()),
+        ]
+        .into();
+        let attrs = build_attr_values(raw).unwrap();
+        let mail = attrs.iter().find(|(k, _)| k == "mail").unwrap();
+        let dept = attrs.iter().find(|(k, _)| k == "dept").unwrap();
+        assert!(matches!(mail.1, AttrValue::Template(_)));
+        assert!(matches!(dept.1, AttrValue::Fixed(_)));
+    }
+
+    #[test]
+    fn build_attr_values_rejects_bad_template() {
+        let raw: HashMap<String, String> =
+            [("mail".to_string(), "{email}@example.com".to_string())].into();
+        assert!(build_attr_values(raw).is_err());
+    }
+
+    // TOML file config deserialization
+
+    #[test]
+    fn file_config_parses_empty() {
+        let fc: FileConfig = toml::from_str("").unwrap();
+        assert!(fc.listen.is_none());
+        assert!(fc.user_attributes.is_none());
+    }
+
+    #[test]
+    fn file_config_parses_user_attributes() {
+        let toml = r#"
+[user_attributes]
+mail = "{uid}@example.com"
+department = "Engineering"
+"#;
+        let fc: FileConfig = toml::from_str(toml).unwrap();
+        let ua = fc.user_attributes.unwrap();
+        assert_eq!(ua["mail"], "{uid}@example.com");
+        assert_eq!(ua["department"], "Engineering");
+    }
+
+    #[test]
+    fn file_config_parses_user_overrides() {
+        let toml = r#"
+[user_overrides.alice]
+mail = "alice@external.com"
+"#;
+        let fc: FileConfig = toml::from_str(toml).unwrap();
+        let ov = fc.user_overrides.unwrap();
+        assert_eq!(ov["alice"]["mail"], "alice@external.com");
+    }
+
+    #[test]
+    fn file_config_rejects_unknown_field() {
+        assert!(toml::from_str::<FileConfig>("bogus_field = 1").is_err());
     }
 }

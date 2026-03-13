@@ -25,12 +25,42 @@ BSD format to populate `givenName`, `roomNumber`, `telephoneNumber`, and
 `homePhone` when those fields are non-empty. Each group entry carries
 `posixGroup` attributes (`cn`, `gidNumber`, `memberUid`).
 
+Additional attributes can be added to user entries via the configuration
+file (see [User attributes](#user-attributes) below).
+
 Bind requests are authenticated via PAM. Anonymous binds are accepted.
 
 ## Building
 
 ```
 cargo build --release
+```
+
+## Building a Debian package
+
+Install `cargo-deb` once, then build:
+
+```sh
+cargo install cargo-deb
+cargo deb
+```
+
+The resulting `.deb` is written to `target/debian/`. Install it with:
+
+```sh
+sudo dpkg -i target/debian/pwldapd_0.1.0_amd64.deb
+```
+
+The package installs:
+- `/usr/sbin/pwldapd` — the daemon binary, with `CAP_NET_BIND_SERVICE` set
+- `/usr/share/man/man8/pwldapd.8` — man page
+- `/etc/pam.d/pwldapd` — default PAM configuration (treated as a conffile)
+- `/lib/systemd/system/pwldapd.service` — systemd unit
+
+The service is enabled automatically on install. To start it immediately:
+
+```sh
+sudo systemctl start pwldapd
 ```
 
 ## Usage
@@ -43,6 +73,7 @@ pwldapd [OPTIONS]
 
 | Option | Default | Description |
 |--------|---------|-------------|
+| `-c`, `--config FILE` | — | TOML configuration file; CLI args override file values |
 | `-l`, `--listen ADDR` | `127.0.0.1:389` | Plain (non-TLS) address to listen on; may be repeated |
 | `--tls-listen ADDR` | — | TLS address to listen on; may be repeated; requires `--tls-cert` and `--tls-key` |
 | `-b`, `--base-dn DN` | derived from hostname | LDAP base DN |
@@ -51,12 +82,68 @@ pwldapd [OPTIONS]
 | `--tls-cert FILE` | — | PEM certificate for LDAPS (requires `--tls-key`) |
 | `--tls-key FILE` | — | PEM private key for LDAPS (requires `--tls-cert`) |
 
+### Configuration file
+
+All options can be set in a TOML file and loaded with `--config`. CLI
+arguments take precedence over file values. An example covering every
+option:
+
+```toml
+listen     = ["127.0.0.1:389"]
+tls_listen = ["[::]:636"]
+base_dn    = "dc=example,dc=com"
+uid_ranges = ["1000-65535"]
+gid_ranges = ["1000-65535"]
+tls_cert   = "/etc/ssl/certs/ldap.pem"
+tls_key    = "/etc/ssl/private/ldap.key"
+
+[user_attributes]
+mail       = "{uid}@example.com"
+department = "Engineering"
+
+[user_overrides.alice]
+mail       = "alice@external.com"
+department = "Platform Engineering"
+```
+
+Unknown keys in the file are treated as errors so that typos are caught
+at startup rather than silently ignored.
+
+### User attributes
+
+The `[user_attributes]` section adds or replaces attributes on every user
+entry. Values are either fixed strings or templates containing
+`{placeholder}` sequences:
+
+| Placeholder | Value |
+|-------------|-------|
+| `{uid}` | Username |
+| `{cn}` | Common name (from GECOS) |
+| `{sn}` | Surname (last word of cn) |
+| `{uidNumber}` | Numeric UID |
+| `{gidNumber}` | Numeric GID |
+| `{homeDirectory}` | Home directory path |
+| `{shell}` | Login shell |
+| `{gecos}` | Raw GECOS field |
+
+An unknown placeholder such as `{email}` is a fatal error at startup.
+
+Values in `[user_attributes]` may replace built-in attributes such as
+`loginShell` or `cn`. The core identity attributes `objectClass`, `uid`,
+`uidNumber`, and `gidNumber` are protected and cannot be replaced; attempts
+produce a warning and are ignored.
+
+The `[user_overrides.<username>]` section sets fixed attribute values for
+a specific user. These take precedence over the general `[user_attributes]`
+rules. Templates are not supported in per-user overrides.
+
 ### Base DN
 
-If `--base-dn` is not given, the base DN is derived from the fully-qualified
-hostname. For example, on a host named `server.example.com` the base DN
-becomes `dc=server,dc=example,dc=com`. If the hostname is unqualified,
-`pwldapd` attempts a DNS canonical-name lookup to find the FQDN.
+If `--base-dn` is not given (and not set in the config file), the base DN
+is derived from the fully-qualified hostname. For example, on a host named
+`server.example.com` the base DN becomes `dc=server,dc=example,dc=com`. If
+the hostname is unqualified, `pwldapd` attempts a DNS canonical-name lookup
+to find the FQDN.
 
 ### IPv6
 

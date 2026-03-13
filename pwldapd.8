@@ -5,6 +5,8 @@ pwldapd \- LDAP daemon backed by the local POSIX user and group database
 .
 .SH SYNOPSIS
 .B pwldapd
+.RB [ \-c
+.IR file ]
 .RB [ \-l
 .IR addr ]
 .RB [ \-\-tls\-listen
@@ -65,7 +67,6 @@ carries the following attributes:
 .BR uid ,
 .BR cn ,
 .BR sn ,
-.BR givenName ,
 .BR uidNumber ,
 .BR gidNumber ,
 .BR homeDirectory ,
@@ -79,7 +80,9 @@ and
 .B homePhone
 attributes are also populated when the corresponding GECOS fields
 are non-empty (see
-.BR GECOS\ PARSING ).
+.BR "GECOS PARSING" ).
+Additional attributes may be defined in the configuration file (see
+.BR "USER ATTRIBUTES" ).
 .PP
 Each
 .B cn=\c
@@ -93,6 +96,16 @@ carries:
 .BR memberUid .
 .
 .SH OPTIONS
+.TP
+.BI \-c " file" ", \-\-config=" file
+Path to a TOML configuration file.
+All options listed below can be set in the file; a command-line argument
+always takes precedence over the corresponding file value.
+See
+.B CONFIGURATION FILE
+for the file format and
+.B USER ATTRIBUTES
+for the attribute extension syntax.
 .TP
 .BI \-l " addr" ", \-\-listen=" addr
 Plain (non-TLS) address and port to listen on.
@@ -150,6 +163,119 @@ Must be given together with
 Path to a PEM-encoded TLS private key.
 Must be given together with
 .BR \-\-tls\-cert .
+.
+.SH CONFIGURATION FILE
+.B pwldapd
+accepts a TOML configuration file specified with
+.BR \-\-config .
+No default file path is consulted; the file is only loaded when the flag
+is given explicitly.
+.PP
+All fields are optional.
+Unknown fields are rejected at startup so that typos are caught immediately
+rather than silently ignored.
+Command-line arguments always override the corresponding file values.
+.PP
+An annotated example covering every option:
+.PP
+.RS
+.nf
+listen     = ["127.0.0.1:389"]
+tls_listen = ["[::]:636"]
+base_dn    = "dc=example,dc=com"
+uid_ranges = ["1000\-65535"]
+gid_ranges = ["1000\-65535"]
+tls_cert   = "/etc/ssl/certs/ldap.pem"
+tls_key    = "/etc/ssl/private/ldap.key"
+
+[user_attributes]
+mail       = "{uid}@example.com"
+department = "Engineering"
+
+[user_overrides.alice]
+mail       = "alice@external.com"
+department = "Platform Engineering"
+.fi
+.RE
+.PP
+The
+.B uid_ranges
+and
+.B gid_ranges
+values use the same
+.I N
+or
+.I N\-M
+syntax as the corresponding command-line options.
+.PP
+The
+.B [user_attributes]
+and
+.B [user_overrides]
+sections are described in
+.BR "USER ATTRIBUTES" .
+.
+.SH USER ATTRIBUTES
+The
+.B [user_attributes]
+section of the configuration file defines extra attributes that are added
+to every user entry.
+A value is either a fixed string or a template containing one or more
+.BI { placeholder }
+sequences.
+.PP
+The following placeholders are recognised:
+.PP
+.TS
+l l.
+\fBPlaceholder\fR	\fBValue\fR
+{uid}	Username
+{cn}	Common name (derived from GECOS)
+{sn}	Surname (last word of cn)
+{uidNumber}	Numeric UID
+{gidNumber}	Numeric GID
+{homeDirectory}	Home directory path
+{shell}	Login shell
+{gecos}	Raw GECOS field
+.TE
+.PP
+An unknown placeholder such as
+.B {email}
+is a fatal error at startup.
+.PP
+Attributes defined in
+.B [user_attributes]
+may replace built-in attributes such as
+.B loginShell
+or
+.BR cn .
+The four core identity attributes
+.BR objectClass ,
+.BR uid ,
+.BR uidNumber ,
+and
+.B gidNumber
+are protected: any attempt to override them produces a warning and is
+silently ignored.
+.PP
+The
+.B [user_overrides]
+section allows per-user attribute values that take precedence over the
+general
+.B [user_attributes]
+rules.
+Each sub-table is keyed by username:
+.PP
+.RS
+.nf
+[user_overrides.alice]
+mail = "alice@external.com"
+.fi
+.RE
+.PP
+Values in
+.B [user_overrides]
+are fixed strings; template placeholders are not expanded.
 .
 .SH BASE DN DERIVATION
 When
@@ -362,6 +488,11 @@ See
 .B /etc/pam.d/pwldapd
 PAM service configuration for bind authentication.
 Must be created before starting the daemon.
+.TP
+.B /etc/pwldapd.conf
+Conventional path for the TOML configuration file.
+Not consulted automatically; pass it with
+.BR \-\-config .
 .
 .SH EXAMPLES
 Serve local users on the loopback with default settings:
@@ -369,6 +500,23 @@ Serve local users on the loopback with default settings:
 .RS
 .nf
 pwldapd
+.fi
+.RE
+.PP
+Load all settings from a configuration file:
+.PP
+.RS
+.nf
+pwldapd \-\-config /etc/pwldapd.conf
+.fi
+.RE
+.PP
+Override the listen address from the command line while still using the
+rest of the config file:
+.PP
+.RS
+.nf
+pwldapd \-\-config /etc/pwldapd.conf \-\-listen 127.0.0.1:389
 .fi
 .RE
 .PP

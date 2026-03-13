@@ -25,42 +25,47 @@ use tracing::info;
                   system hostname. \
                   IPv6 addresses must use bracket notation, e.g. [::1]:389."
 )]
-struct Cli {
+pub struct Cli {
+    /// Path to TOML configuration file.
+    /// All options can be set in the file; CLI args take precedence.
+    #[arg(short = 'c', long, value_name = "FILE")]
+    pub config: Option<PathBuf>,
+
     /// Plain (non-TLS) address to listen on. May be repeated.
     /// (IPv6: use bracket notation, e.g. [::1]:389)
-    #[arg(short, long, value_name = "ADDR",
-          default_value = "127.0.0.1:389")]
-    listen: Vec<String>,
+    /// Default: 127.0.0.1:389
+    #[arg(short, long, value_name = "ADDR")]
+    pub listen: Vec<String>,
 
     /// TLS address to listen on. May be repeated.
     /// Requires --tls-cert and --tls-key.
     #[arg(long, value_name = "ADDR",
           requires = "tls_cert", requires = "tls_key")]
-    tls_listen: Vec<String>,
+    pub tls_listen: Vec<String>,
 
     /// LDAP base DN (e.g. dc=example,dc=com) [default: derived from hostname]
     #[arg(short, long)]
-    base_dn: Option<String>,
+    pub base_dn: Option<String>,
 
     /// Restrict served accounts to this UID range (e.g. 1000-65535 or 1001).
     /// May be repeated to allow multiple ranges.
-    #[arg(short = 'u', long = "uid-range", value_name = "N[-M]",
-          default_value = "1000-65535")]
-    uid_ranges: Vec<config::UidRange>,
+    /// Default: 1000-65535
+    #[arg(short = 'u', long = "uid-range", value_name = "N[-M]")]
+    pub uid_ranges: Vec<config::UidRange>,
 
     /// Restrict served groups to this GID range (e.g. 1000-65535 or 200).
     /// May be repeated to allow multiple ranges.
     /// Primary groups of served users are always included.
     #[arg(short = 'g', long = "gid-range", value_name = "N[-M]")]
-    gid_ranges: Vec<config::GidRange>,
+    pub gid_ranges: Vec<config::GidRange>,
 
     /// Path to PEM-encoded TLS certificate (requires --tls-key)
     #[arg(long, requires = "tls_key", value_name = "FILE")]
-    tls_cert: Option<PathBuf>,
+    pub tls_cert: Option<PathBuf>,
 
     /// Path to PEM-encoded TLS private key (requires --tls-cert)
     #[arg(long, requires = "tls_cert", value_name = "FILE")]
-    tls_key: Option<PathBuf>,
+    pub tls_key: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -80,25 +85,12 @@ async fn main() -> Result<()> {
         bail!("--tls-listen requires --tls-cert and --tls-key");
     }
 
-    let base_dn = match cli.base_dn {
-        Some(dn) => dn,
-        None => config::derive_base_dn()?,
+    let file_config = match cli.config.as_deref() {
+        Some(path) => Some(config::load_file_config(path)?),
+        None => None,
     };
 
-    let uid_ranges: Vec<_> =
-        cli.uid_ranges.into_iter().map(|r| r.0).collect();
-    let gid_ranges: Vec<_> =
-        cli.gid_ranges.into_iter().map(|r| r.0).collect();
-
-    let cfg = config::Config {
-        listen: cli.listen,
-        tls_listen: cli.tls_listen,
-        base_dn,
-        uid_ranges,
-        gid_ranges,
-        tls_cert: cli.tls_cert,
-        tls_key: cli.tls_key,
-    };
+    let cfg = config::merge_config(cli, file_config)?;
 
     let uid_ranges_s: Vec<String> = cfg.uid_ranges.iter()
         .map(|r| format!("{}-{}", r.start(), r.end()))

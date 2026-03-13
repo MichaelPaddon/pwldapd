@@ -20,3 +20,27 @@ clap = { version = "4", features = ["derive"] }
 thiserror = "2"
 anyhow = "1"
 zeroize = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+[package.metadata.deb]
+maintainer = "Michael Paddon <michael@paddon.org>"
+copyright = "2026 Michael Paddon <michael@paddon.org>"
+license-file = ["LICENSE", "0"]
+extended-description = """\
+A read-only LDAP server (RFC 4510) that exposes the local POSIX user and \
+group database over the LDAP protocol. Bind requests are authenticated via \
+PAM. Anonymous binds are accepted. TLS (LDAPS) is supported.\
+"""
+depends = "$auto, libpam-runtime"
+recommends = "libcap2-bin"
+section = "net"
+priority = "optional"
+conf-files = ["/etc/pam.d/pwldapd"]
+maintainer-scripts = "pkg/"
+systemd-units = { unit-name = "pwldapd", enable = true }
+assets = [
+    { source = "target/release/pwldapd", dest = "usr/sbin/pwldapd", mode = "0755" },
+    { source = "pwldapd.8", dest = "usr/share/man/man8/pwldapd.8", mode = "0644" },
+    { source = "pkg/pwldapd.pam", dest = "etc/pam.d/pwldapd", mode = "0644" },
+]
