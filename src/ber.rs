@@ -143,10 +143,10 @@ pub fn decode_length(buf: &[u8]) -> BerResult<(usize, usize)> {
     Ok((len, 1 + n))
 }
 
-pub fn expect_tag<'a>(
-    buf: &'a [u8],
+pub fn expect_tag(
+    buf: &[u8],
     expected: u8,
-) -> BerResult<(&'a [u8], &'a [u8])> {
+) -> BerResult<(&[u8], &[u8])> {
     let (tag, value, rest) = parse_tlv(buf)?;
     if tag != expected {
         return Err(BerError::UnexpectedTag { expected, got: tag });

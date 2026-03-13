@@ -13,7 +13,6 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tracing::{debug, info, warn};
 use zeroize::Zeroizing;
 
-#[derive(Debug, Clone, PartialEq)]
 enum BindState {
     Anonymous,
     Authenticated,
@@ -121,7 +120,7 @@ async fn do_bind(
     let password = Zeroizing::new(password.clone());
     let config = config.clone();
     let ok = tokio::task::spawn_blocking(move || {
-        if !pam_auth::authenticate(&username, &*password) {
+        if !pam_auth::authenticate(&username, &password) {
             return false;
         }
         // Deny bind if the user's UID falls outside the configured range.
@@ -235,12 +234,11 @@ fn collect_entries_from(
                 {
                     out.push(user_entry(u, config));
                 }
-            } else if let Some(cn) = leaf_attr(&base, "cn=", &groups_dn) {
-                if let Some(g) = groups.iter()
+            } else if let Some(cn) = leaf_attr(&base, "cn=", &groups_dn)
+                && let Some(g) = groups.iter()
                     .find(|g| g.name.eq_ignore_ascii_case(cn))
-                {
-                    out.push(group_entry(g, config));
-                }
+            {
+                out.push(group_entry(g, config));
             }
         }
         Scope::OneLevel => {
@@ -272,12 +270,11 @@ fn collect_entries_from(
                 {
                     out.push(user_entry(u, config));
                 }
-            } else if let Some(cn) = leaf_attr(&base, "cn=", &groups_dn) {
-                if let Some(g) = groups.iter()
+            } else if let Some(cn) = leaf_attr(&base, "cn=", &groups_dn)
+                && let Some(g) = groups.iter()
                     .find(|g| g.name.eq_ignore_ascii_case(cn))
-                {
-                    out.push(group_entry(g, config));
-                }
+            {
+                out.push(group_entry(g, config));
             }
         }
     }
@@ -449,12 +446,7 @@ fn apply_user_attributes(
         std::collections::HashSet::new();
 
     for (attr_name, attr_val) in &config.user_attributes {
-        // Skip protected attributes with a one-time warning.
         if PROTECTED_ATTRS.iter().any(|p| p.eq_ignore_ascii_case(attr_name)) {
-            warn!(
-                "user_attributes: {attr_name} is protected and cannot be \
-                 overridden; skipping"
-            );
             continue;
         }
         handled.insert(attr_name.to_lowercase());
@@ -490,11 +482,6 @@ fn apply_user_attributes(
                 continue;
             }
             if PROTECTED_ATTRS.iter().any(|p| p.eq_ignore_ascii_case(attr_name)) {
-                warn!(
-                    "user_overrides.{}: {attr_name} is protected and cannot \
-                     be overridden; skipping",
-                    user.name
-                );
                 continue;
             }
             if let Some(existing) = attrs.iter_mut()
@@ -522,7 +509,7 @@ fn leaf_attr<'a>(
         return None;
     }
     let value = &first[prefix.len()..];
-    let rest: String = dn.splitn(2, ',').nth(1)?.to_lowercase();
+    let rest: String = dn.split_once(',')?.1.to_lowercase();
     if rest == parent_dn {
         Some(value)
     } else {
@@ -533,7 +520,7 @@ fn leaf_attr<'a>(
 /// Extract the value of the first `uid=` component from a DN.
 /// Used to obtain a plain username from a bind DN such as
 /// `uid=alice,ou=people,dc=example,dc=com`.
-fn uid_from_dn<'a>(dn: &'a str) -> Option<&'a str> {
+fn uid_from_dn(dn: &str) -> Option<&str> {
     dn.split(',')
         .find(|p| p.to_lowercase().starts_with("uid="))
         .map(|p| &p[4..])

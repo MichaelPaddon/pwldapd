@@ -1,4 +1,4 @@
-/// PAM-based authentication for LDAP simple binds.
+//! PAM-based authentication for LDAP simple binds.
 
 const PAM_SERVICE: &str = "pwldapd";
 

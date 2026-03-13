@@ -149,6 +149,18 @@ pub fn merge_config(file: Option<FileConfig>) -> Result<Config> {
         build_attr_values(fc.user_attributes.unwrap_or_default())?;
     let user_overrides = fc.user_overrides.unwrap_or_default();
 
+    // Warn at startup about any protected attributes in user_overrides.
+    for (username, overrides) in &user_overrides {
+        for attr_name in overrides.keys() {
+            if PROTECTED_ATTRS.iter().any(|p| p.eq_ignore_ascii_case(attr_name)) {
+                tracing::warn!(
+                    "user_overrides.{username}: {attr_name} is protected \
+                     and cannot be overridden; skipping"
+                );
+            }
+        }
+    }
+
     Ok(Config {
         listen,
         tls_listen,
@@ -164,11 +176,20 @@ pub fn merge_config(file: Option<FileConfig>) -> Result<Config> {
 
 /// Convert the raw `HashMap<String, String>` from the file into typed
 /// `AttrValue`s, validating any template placeholders.
+/// Protected attributes are warned about and skipped here so the warning
+/// fires once at startup rather than once per user per search.
 pub fn build_attr_values(
     raw: HashMap<String, String>,
 ) -> Result<Vec<(String, AttrValue)>> {
     let mut out = Vec::with_capacity(raw.len());
     for (name, value) in raw {
+        if PROTECTED_ATTRS.iter().any(|p| p.eq_ignore_ascii_case(&name)) {
+            tracing::warn!(
+                "user_attributes: {name} is protected and cannot be \
+                 overridden; skipping"
+            );
+            continue;
+        }
         let av = if value.contains('{') {
             validate_template(&value, &name)?;
             AttrValue::Template(value)
@@ -289,10 +310,10 @@ pub fn derive_base_dn() -> Result<String> {
     }
 
     // Short hostname — try getaddrinfo(AI_CANONNAME) to find the FQDN.
-    if let Some(fqdn) = canonical_name(&hostname) {
-        if let Some(dn) = base_dn_from_hostname(&fqdn) {
-            return Ok(dn);
-        }
+    if let Some(fqdn) = canonical_name(&hostname)
+        && let Some(dn) = base_dn_from_hostname(&fqdn)
+    {
+        return Ok(dn);
     }
 
     bail!(
