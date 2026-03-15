@@ -9,8 +9,9 @@ ExecStart=/usr/sbin/pwldapd
 Restart=on-failure
 RestartSec=5
 
-User=pwldapd
-Group=pwldapd
+# systemd allocates a transient unprivileged user/group named "pwldapd"
+# at startup without requiring a persistent system account.
+DynamicUser=yes
 # shadow group membership lets pam_unix.so read /etc/shadow directly,
 # avoiding the need for the setgid unix_chkpwd helper.
 SupplementaryGroups=shadow

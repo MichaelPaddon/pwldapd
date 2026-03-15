@@ -1,16 +1,4 @@
 #!/bin/sh
 set -e
 
-case "$1" in
-    configure|triggered)
-        # Create the system user and group if they do not already exist.
-        # The shadow group membership is granted at runtime via the systemd
-        # unit (SupplementaryGroups=shadow), not at the OS level.
-        if ! getent passwd pwldapd > /dev/null 2>&1; then
-            adduser --system --no-create-home --home /nonexistent \
-                    --shell /usr/sbin/nologin --group pwldapd
-        fi
-        ;;
-esac
-
 #DEBHELPER#
