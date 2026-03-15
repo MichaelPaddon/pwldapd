@@ -18,6 +18,7 @@ use tracing::info;
 #[derive(Parser, Debug)]
 #[command(
     name = "pwldapd",
+    version,
     about = "LDAP daemon backed by the POSIX password database and PAM",
     long_about = "Serves local users and groups over LDAP (RFC 4510). \
                   Binds are authenticated via PAM. \
