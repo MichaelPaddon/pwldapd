@@ -90,6 +90,8 @@ pub const PROTECTED_ATTRS: &[&str] = &["objectClass", "uid", "uidNumber", "gidNu
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileConfig {
+    /// Glob patterns of additional config files to load before this file.
+    pub include:         Option<Vec<String>>,
     pub listen:          Option<Vec<String>>,
     pub tls_listen:      Option<Vec<String>>,
     pub base_dn:         Option<String>,
@@ -101,13 +103,83 @@ pub struct FileConfig {
     pub user_overrides:  Option<HashMap<String, HashMap<String, String>>>,
 }
 
-/// Load and parse a TOML config file from `path`.
+/// Load and parse a TOML config file from `path`, processing any `include`
+/// glob patterns. Included files are merged first; the main file's values
+/// take precedence over included ones. Includes are not processed recursively.
 pub fn load_file_config(path: &Path) -> Result<FileConfig> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("reading config file {:?}: {e}", path))?;
-    let fc: FileConfig = toml::from_str(&text)
+    let mut fc: FileConfig = toml::from_str(&text)
         .map_err(|e| anyhow::anyhow!("parsing config file {:?}: {e}", path))?;
-    Ok(fc)
+
+    let patterns = fc.include.take().unwrap_or_default();
+    if patterns.is_empty() {
+        return Ok(fc);
+    }
+
+    let mut included = FileConfig::default();
+    for pattern in &patterns {
+        let paths = glob::glob(pattern)
+            .map_err(|e| anyhow::anyhow!("invalid include pattern {pattern:?}: {e}"))?;
+        for entry in paths {
+            let inc_path = entry
+                .map_err(|e| anyhow::anyhow!("error expanding include pattern: {e}"))?;
+            let inc_text = std::fs::read_to_string(&inc_path)
+                .map_err(|e| anyhow::anyhow!("reading {:?}: {e}", inc_path))?;
+            let mut inc_fc: FileConfig = toml::from_str(&inc_text)
+                .map_err(|e| anyhow::anyhow!("parsing {:?}: {e}", inc_path))?;
+            inc_fc.include = None; // no recursive includes
+            included = merge_file_configs(included, inc_fc);
+        }
+    }
+    // Main file wins over includes.
+    Ok(merge_file_configs(included, fc))
+}
+
+/// Merge two `FileConfig` values. `overlay` wins over `base` for every field.
+/// For map fields (`user_attributes`, `user_overrides`) both are merged with
+/// overlay entries taking precedence on key collision.
+fn merge_file_configs(base: FileConfig, overlay: FileConfig) -> FileConfig {
+    FileConfig {
+        include: None,
+        listen:     overlay.listen.or(base.listen),
+        tls_listen: overlay.tls_listen.or(base.tls_listen),
+        base_dn:    overlay.base_dn.or(base.base_dn),
+        uid_ranges: overlay.uid_ranges.or(base.uid_ranges),
+        gid_ranges: overlay.gid_ranges.or(base.gid_ranges),
+        tls_cert:   overlay.tls_cert.or(base.tls_cert),
+        tls_key:    overlay.tls_key.or(base.tls_key),
+        user_attributes: merge_maps(base.user_attributes, overlay.user_attributes),
+        user_overrides: merge_override_maps(base.user_overrides, overlay.user_overrides),
+    }
+}
+
+fn merge_maps(
+    base: Option<HashMap<String, String>>,
+    overlay: Option<HashMap<String, String>>,
+) -> Option<HashMap<String, String>> {
+    match (base, overlay) {
+        (None, x) | (x, None) => x,
+        (Some(mut b), Some(o)) => {
+            b.extend(o);
+            Some(b)
+        }
+    }
+}
+
+fn merge_override_maps(
+    base: Option<HashMap<String, HashMap<String, String>>>,
+    overlay: Option<HashMap<String, HashMap<String, String>>>,
+) -> Option<HashMap<String, HashMap<String, String>>> {
+    match (base, overlay) {
+        (None, x) | (x, None) => x,
+        (Some(mut b), Some(o)) => {
+            for (user, attrs) in o {
+                b.entry(user).or_default().extend(attrs);
+            }
+            Some(b)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -698,6 +770,73 @@ mod tests {
         assert!(!attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("objectClass")));
         assert!(!attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("uid")));
         assert!(attrs.iter().any(|(k, _)| k == "mail"));
+    }
+
+    // merge_file_configs
+
+    #[test]
+    fn merge_file_configs_overlay_wins_scalars() {
+        let base = FileConfig {
+            base_dn: Some("dc=base,dc=com".into()),
+            listen:  Some(vec!["0.0.0.0:389".into()]),
+            ..Default::default()
+        };
+        let overlay = FileConfig {
+            base_dn: Some("dc=overlay,dc=com".into()),
+            ..Default::default()
+        };
+        let merged = merge_file_configs(base, overlay);
+        assert_eq!(merged.base_dn.as_deref(), Some("dc=overlay,dc=com"));
+        assert_eq!(merged.listen.as_deref(), Some(&["0.0.0.0:389".to_string()][..]));
+    }
+
+    #[test]
+    fn merge_file_configs_merges_user_attributes() {
+        let base = FileConfig {
+            user_attributes: Some([
+                ("mail".into(), "{uid}@base.com".into()),
+                ("dept".into(), "Base".into()),
+            ].into()),
+            ..Default::default()
+        };
+        let overlay = FileConfig {
+            user_attributes: Some([
+                ("mail".into(), "{uid}@overlay.com".into()),
+                ("title".into(), "Staff".into()),
+            ].into()),
+            ..Default::default()
+        };
+        let merged = merge_file_configs(base, overlay);
+        let ua = merged.user_attributes.unwrap();
+        // overlay wins on collision
+        assert_eq!(ua["mail"],  "{uid}@overlay.com");
+        // base value preserved when no collision
+        assert_eq!(ua["dept"],  "Base");
+        // overlay-only value present
+        assert_eq!(ua["title"], "Staff");
+    }
+
+    #[test]
+    fn merge_file_configs_merges_user_overrides() {
+        let base = FileConfig {
+            user_overrides: Some([
+                ("alice".into(), [("mail".into(), "old@x.com".into())].into()),
+            ].into()),
+            ..Default::default()
+        };
+        let overlay = FileConfig {
+            user_overrides: Some([
+                ("alice".into(), [("mail".into(), "new@x.com".into()),
+                                  ("dept".into(), "Eng".into())].into()),
+                ("bob".into(),   [("title".into(), "Admin".into())].into()),
+            ].into()),
+            ..Default::default()
+        };
+        let merged = merge_file_configs(base, overlay);
+        let ov = merged.user_overrides.unwrap();
+        assert_eq!(ov["alice"]["mail"], "new@x.com");
+        assert_eq!(ov["alice"]["dept"], "Eng");
+        assert_eq!(ov["bob"]["title"],  "Admin");
     }
 
     // TOML file config deserialization

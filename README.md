@@ -69,16 +69,18 @@ sudo systemctl start pwldapd
 pwldapd [-c FILE]
 ```
 
-Without a config file, `pwldapd` starts with built-in defaults: listening on
-`127.0.0.1:389`, base DN derived from the system hostname, and all UIDs and
-GIDs served. All other options require a configuration file.
+If `-c` is not given, `pwldapd` looks for `/etc/pwldapd.conf` and loads it
+if present. Without any config file it starts with built-in defaults:
+listening on `127.0.0.1:389`, base DN derived from the system hostname, and
+all UIDs and GIDs served.
 
 ### Configuration file
 
-Load a TOML configuration file with `--config`. An example covering every
-option:
+Load a TOML configuration file with `--config` (or place it at
+`/etc/pwldapd.conf` for automatic loading). An example covering every option:
 
 ```toml
+include    = ["/etc/pwldapd.d/*.conf"]
 listen     = ["127.0.0.1:389"]
 tls_listen = ["[::]:636"]
 base_dn    = "dc=example,dc=com"
@@ -95,6 +97,11 @@ department = "Engineering"
 mail       = "alice@external.com"
 department = "Platform Engineering"
 ```
+
+The `include` field takes a list of glob patterns. Each matching file is
+loaded and merged before the values in the main file; the main file always
+takes precedence. Included files may not themselves contain `include`
+directives.
 
 Unknown keys in the file are treated as errors so that typos are caught
 at startup rather than silently ignored.

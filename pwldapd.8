@@ -92,6 +92,11 @@ for the file format and
 for the attribute extension syntax.
 When this option is omitted,
 .B pwldapd
+looks for
+.B /etc/pwldapd.conf
+and loads it if present.
+If neither an explicit path nor the default file is found,
+.B pwldapd
 starts with built-in defaults: listening on
 .BR 127.0.0.1:389 ,
 the base DN derived from the system hostname, and all UIDs and GIDs served.
@@ -112,6 +117,7 @@ An annotated example covering every option:
 .PP
 .RS
 .nf
+include    = ["/etc/pwldapd.d/*.conf"]
 listen     = ["127.0.0.1:389"]
 tls_listen = ["[::]:636"]
 base_dn    = "dc=example,dc=com"
@@ -129,6 +135,15 @@ mail       = "alice@external.com"
 department = "Platform Engineering"
 .fi
 .RE
+.PP
+The
+.B include
+field takes a list of glob patterns.
+Each matching file is loaded and merged before the values in the main file;
+the main file always takes precedence.
+Included files may not themselves contain
+.B include
+directives.
 .PP
 The
 .B uid_ranges

@@ -42,9 +42,14 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    let file_config = match cli.config.as_deref() {
-        Some(path) => Some(config::load_file_config(path)?),
-        None => None,
+    const DEFAULT_CONFIG: &str = "/etc/pwldapd.conf";
+
+    let file_config = if let Some(path) = cli.config.as_deref() {
+        Some(config::load_file_config(path)?)
+    } else if std::path::Path::new(DEFAULT_CONFIG).exists() {
+        Some(config::load_file_config(std::path::Path::new(DEFAULT_CONFIG))?)
+    } else {
+        None
     };
 
     let cfg = config::merge_config(file_config)?;
