@@ -460,6 +460,26 @@ mod tests {
     // Filter: AND / OR / NOT
 
     #[test]
+    fn filter_empty_and_is_vacuously_true() {
+        let a = attrs(&[("uid", &["alice"])]);
+        assert!(matches_filter(&Filter::And(vec![]), &a));
+    }
+
+    #[test]
+    fn filter_empty_or_is_vacuously_false() {
+        let a = attrs(&[("uid", &["alice"])]);
+        assert!(!matches_filter(&Filter::Or(vec![]), &a));
+    }
+
+    #[test]
+    fn filter_unimplemented_always_false() {
+        let a = attrs(&[("uid", &["alice"])]);
+        assert!(!matches_filter(&Filter::GreaterOrEqual, &a));
+        assert!(!matches_filter(&Filter::LessOrEqual, &a));
+        assert!(!matches_filter(&Filter::ApproxMatch, &a));
+    }
+
+    #[test]
     fn filter_and_both_match() {
         let a = attrs(&[
             ("objectClass", &["posixAccount"]),

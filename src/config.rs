@@ -588,6 +588,82 @@ mod tests {
         assert!(build_attr_values(raw).is_err());
     }
 
+    // GidRange parsing (parallel to UidRange)
+
+    #[test]
+    fn gid_range_single() {
+        let r: GidRange = "200".parse().unwrap();
+        assert_eq!(r.0, 200..=200);
+    }
+
+    #[test]
+    fn gid_range_range() {
+        let r: GidRange = "100-999".parse().unwrap();
+        assert_eq!(r.0, 100..=999);
+    }
+
+    #[test]
+    fn gid_range_invalid() {
+        assert!("abc".parse::<GidRange>().is_err());
+        assert!("500-100".parse::<GidRange>().is_err());
+    }
+
+    // merge_config
+
+    #[test]
+    fn merge_config_no_file_uses_defaults() {
+        // base_dn is derived from the system hostname, so just verify it
+        // is non-empty and that the other defaults are applied.
+        let cfg = merge_config(None).unwrap();
+        assert_eq!(cfg.listen, vec!["127.0.0.1:389"]);
+        assert!(cfg.uid_ranges.is_empty());
+        assert!(cfg.gid_ranges.is_empty());
+        assert!(cfg.tls_cert.is_none());
+        assert!(cfg.user_attributes.is_empty());
+        assert!(cfg.user_overrides.is_empty());
+        assert!(!cfg.base_dn.is_empty());
+    }
+
+    #[test]
+    fn merge_config_file_values_applied() {
+        let fc = FileConfig {
+            listen: Some(vec!["0.0.0.0:3389".into()]),
+            base_dn: Some("dc=test,dc=example,dc=com".into()),
+            uid_ranges: Some(vec![UidRange(2000..=3000)]),
+            ..Default::default()
+        };
+        let cfg = merge_config(Some(fc)).unwrap();
+        assert_eq!(cfg.listen, vec!["0.0.0.0:3389"]);
+        assert_eq!(cfg.base_dn, "dc=test,dc=example,dc=com");
+        assert_eq!(cfg.uid_ranges, vec![2000..=3000]);
+        assert!(cfg.gid_ranges.is_empty());
+    }
+
+    #[test]
+    fn merge_config_tls_listen_without_cert_fails() {
+        let fc = FileConfig {
+            tls_listen: Some(vec!["0.0.0.0:636".into()]),
+            base_dn: Some("dc=test,dc=com".into()),
+            ..Default::default()
+        };
+        assert!(merge_config(Some(fc)).is_err());
+    }
+
+    // build_attr_values silently drops protected attrs
+
+    #[test]
+    fn build_attr_values_skips_protected_attrs() {
+        let raw: HashMap<String, String> = [
+            ("objectClass".to_string(), "hacker".to_string()),
+            ("uid".to_string(), "injected".to_string()),
+            ("mail".to_string(), "x@example.com".to_string()),
+        ].into();
+        let attrs = build_attr_values(raw).unwrap();
+        assert!(!attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("objectClass")));
+        assert!(!attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("uid")));
+        assert!(attrs.iter().any(|(k, _)| k == "mail"));
+    }
+
     // TOML file config deserialization
 
     #[test]

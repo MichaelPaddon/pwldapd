@@ -316,6 +316,24 @@ mod tests {
         assert!(parse_tlv(&[0x04, 0x03, b'a', b'b']).is_err());
     }
 
+    // Boolean
+
+    #[test]
+    fn boolean_true() {
+        let buf = [0x01, 0x01, 0xff];
+        let (v, rest) = decode_boolean(&buf).unwrap();
+        assert!(v);
+        assert!(rest.is_empty());
+    }
+
+    #[test]
+    fn boolean_false() {
+        let buf = [0x01, 0x01, 0x00];
+        let (v, rest) = decode_boolean(&buf).unwrap();
+        assert!(!v);
+        assert!(rest.is_empty());
+    }
+
     // Remaining bytes
 
     #[test]

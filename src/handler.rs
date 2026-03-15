@@ -1249,6 +1249,75 @@ mod tests {
         assert_eq!(attr_values(&entry, "mail"), vec!["alice@example.com"]);
     }
 
+    // uid_from_dn
+
+    #[test]
+    fn uid_from_dn_extracts_from_full_dn() {
+        assert_eq!(
+            uid_from_dn("uid=alice,ou=people,dc=example,dc=com"),
+            Some("alice"),
+        );
+    }
+
+    #[test]
+    fn uid_from_dn_handles_no_uid_component() {
+        assert_eq!(
+            uid_from_dn("cn=staff,ou=groups,dc=example,dc=com"),
+            None,
+        );
+        assert_eq!(uid_from_dn(""), None);
+    }
+
+    #[test]
+    fn uid_from_dn_bare_username_no_dn() {
+        // Some clients send just "alice" as the bind DN.
+        // uid_from_dn won't find a uid= component; the caller falls back
+        // to the raw name.
+        assert_eq!(uid_from_dn("alice"), None);
+    }
+
+    // select_attributes
+
+    #[test]
+    fn select_attributes_case_insensitive_names() {
+        let u = &users()[0];
+        let entry = user_entry(u, &cfg());
+        // Request attribute name in a different case from what's stored.
+        let selected = select_attributes(&entry, &["UID".into(), "CN".into()]);
+        assert_eq!(selected.attributes.len(), 2);
+        assert!(attr_values(&selected, "uid").contains(&"alice"));
+        assert!(attr_values(&selected, "cn").contains(&"Alice Smith"));
+    }
+
+    // GECOS three-word name
+
+    #[test]
+    fn user_entry_three_word_name() {
+        let u = passwd::User {
+            name: "jsmith".into(), uid: 1003, gid: 1003,
+            gecos: "John Paul Smith".into(),
+            home_dir: "/home/jsmith".into(),
+            shell: "/bin/bash".into(),
+        };
+        let entry = user_entry(&u, &cfg());
+        assert_eq!(attr_values(&entry, "cn"),        vec!["John Paul Smith"]);
+        assert_eq!(attr_values(&entry, "sn"),        vec!["Smith"]);
+        assert_eq!(attr_values(&entry, "givenName"), vec!["John"]);
+    }
+
+    // Unrecognised base DN
+
+    #[test]
+    fn unrecognized_base_dn_returns_empty() {
+        let req = search(
+            "dc=unrelated,dc=org",
+            Scope::WholeSubtree,
+            Filter::Present("objectClass".into()),
+        );
+        let entries = collect_entries_from(&req, &cfg(), &users(), &groups());
+        assert!(entries.is_empty());
+    }
+
     #[test]
     fn protected_attr_not_overridden() {
         let cfg = cfg_with_user_attrs(
