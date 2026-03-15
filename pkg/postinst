@@ -3,16 +3,12 @@ set -e
 
 case "$1" in
     configure|triggered)
-        # Grant the binary the right to bind to privileged ports (< 1024)
-        # without requiring it to run as root for the whole process lifetime.
-        # This is re-applied on every upgrade because package installation
-        # replaces the binary and clears any previous file capabilities.
-        if command -v setcap > /dev/null 2>&1; then
-            setcap cap_net_bind_service=ep /usr/sbin/pwldapd
-        else
-            echo "pwldapd: setcap not found (install libcap2-bin)." >&2
-            echo "         The daemon will not be able to bind to port 389" >&2
-            echo "         unless it runs as root or a redirect is configured." >&2
+        # Create the system user and group if they do not already exist.
+        # The shadow group membership is granted at runtime via the systemd
+        # unit (SupplementaryGroups=shadow), not at the OS level.
+        if ! getent passwd pwldapd > /dev/null 2>&1; then
+            adduser --system --no-create-home --home /nonexistent \
+                    --shell /usr/sbin/nologin --group pwldapd
         fi
         ;;
 esac

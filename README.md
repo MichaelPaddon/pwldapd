@@ -145,8 +145,12 @@ tls_listen = ["[::]:636"]
 
 ### Listening on port 389
 
-Port 389 requires elevated privileges. The recommended approach is to grant
-the binary the `CAP_NET_BIND_SERVICE` capability rather than running as root:
+Port 389 requires elevated privileges. When installed from the Debian
+package, the systemd unit runs `pwldapd` as the unprivileged `pwldapd`
+system user and grants `CAP_NET_BIND_SERVICE` via `AmbientCapabilities`,
+so no additional configuration is needed.
+
+When running outside of the package, grant the capability directly:
 
 ```
 sudo setcap cap_net_bind_service=ep ./target/release/pwldapd

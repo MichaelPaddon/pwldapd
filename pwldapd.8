@@ -343,9 +343,18 @@ The fifth field has no standard LDAP mapping and is ignored.
 .
 .SH LISTENING ON PORT 389
 Port 389 requires elevated privileges.
-The recommended approach is to grant the binary the
+When installed from the Debian package the systemd unit runs
+.B pwldapd
+as the unprivileged
+.B pwldapd
+system user and grants
 .B CAP_NET_BIND_SERVICE
-capability rather than running as root:
+via
+.BR AmbientCapabilities ,
+so no additional configuration is needed.
+.PP
+When running outside of the package, the recommended approach is to grant
+the binary the capability directly rather than running as root:
 .PP
 .RS
 .nf
