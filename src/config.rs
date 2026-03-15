@@ -114,13 +114,32 @@ pub fn load_file_config(path: &Path) -> Result<FileConfig> {
 // Config merging
 // ---------------------------------------------------------------------------
 
+/// Append `:<port>` to `addr` if it does not already include a port number.
+/// Detection works by attempting to parse as a `SocketAddr`: success means
+/// a port is present; failure means none is, and the default is appended.
+fn with_default_port(addr: &str, port: u16) -> String {
+    if addr.parse::<std::net::SocketAddr>().is_ok() {
+        addr.to_string()
+    } else {
+        format!("{addr}:{port}")
+    }
+}
+
 /// Build a `Config` from an optional file config, applying hardcoded defaults
 /// for any fields not present in the file.
 pub fn merge_config(file: Option<FileConfig>) -> Result<Config> {
     let fc = file.unwrap_or_default();
 
-    let listen = fc.listen.unwrap_or_else(|| vec!["127.0.0.1:389".into()]);
-    let tls_listen = fc.tls_listen.unwrap_or_default();
+    let listen: Vec<String> = fc.listen
+        .unwrap_or_else(|| vec!["127.0.0.1:389".into()])
+        .into_iter()
+        .map(|a| with_default_port(&a, 389))
+        .collect();
+    let tls_listen: Vec<String> = fc.tls_listen
+        .unwrap_or_default()
+        .into_iter()
+        .map(|a| with_default_port(&a, 636))
+        .collect();
 
     let base_dn = fc.base_dn
         .map(Ok)
@@ -586,6 +605,23 @@ mod tests {
         let raw: HashMap<String, String> =
             [("mail".to_string(), "{email}@example.com".to_string())].into();
         assert!(build_attr_values(raw).is_err());
+    }
+
+    // with_default_port
+
+    #[test]
+    fn default_port_added_when_absent() {
+        assert_eq!(with_default_port("127.0.0.1", 389), "127.0.0.1:389");
+        assert_eq!(with_default_port("0.0.0.0", 636),   "0.0.0.0:636");
+        assert_eq!(with_default_port("[::1]", 389),      "[::1]:389");
+        assert_eq!(with_default_port("[::]", 636),       "[::]:636");
+    }
+
+    #[test]
+    fn default_port_not_added_when_present() {
+        assert_eq!(with_default_port("127.0.0.1:389",  389), "127.0.0.1:389");
+        assert_eq!(with_default_port("127.0.0.1:3389", 389), "127.0.0.1:3389");
+        assert_eq!(with_default_port("[::1]:636",       636), "[::1]:636");
     }
 
     // GidRange parsing (parallel to UidRange)
