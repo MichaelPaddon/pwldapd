@@ -101,6 +101,7 @@ pub struct FileConfig {
     pub tls_key:         Option<PathBuf>,
     pub user_attributes: Option<HashMap<String, String>>,
     pub user_overrides:  Option<HashMap<String, HashMap<String, String>>>,
+    pub log_level:       Option<String>,
 }
 
 /// Load and parse a TOML config file from `path`, processing any `include`
@@ -151,6 +152,7 @@ fn merge_file_configs(base: FileConfig, overlay: FileConfig) -> FileConfig {
         tls_key:    overlay.tls_key.or(base.tls_key),
         user_attributes: merge_maps(base.user_attributes, overlay.user_attributes),
         user_overrides: merge_override_maps(base.user_overrides, overlay.user_overrides),
+        log_level: overlay.log_level.or(base.log_level),
     }
 }
 

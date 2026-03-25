@@ -33,13 +33,6 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "pwldapd=info".into()),
-        )
-        .init();
-
     let cli = Cli::parse();
 
     const DEFAULT_CONFIG: &str = "/etc/pwldapd.conf";
@@ -51,6 +44,17 @@ async fn main() -> Result<()> {
     } else {
         None
     };
+
+    let log_filter = file_config
+        .as_ref()
+        .and_then(|fc| fc.log_level.as_deref())
+        .map(tracing_subscriber::EnvFilter::new)
+        .or_else(|| tracing_subscriber::EnvFilter::try_from_default_env().ok())
+        .unwrap_or_else(|| "pwldapd=info".into());
+
+    tracing_subscriber::fmt()
+        .with_env_filter(log_filter)
+        .init();
 
     let cfg = config::merge_config(file_config)?;
 

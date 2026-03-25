@@ -88,6 +88,7 @@ uid_ranges = ["1000-65535"]
 gid_ranges = ["1000-65535"]
 tls_cert   = "/etc/ssl/certs/ldap.pem"
 tls_key    = "/etc/ssl/private/ldap.key"
+log_level  = "info"
 
 [user_attributes]
 mail       = "{uid}@example.com"
@@ -193,11 +194,19 @@ are always visible regardless of the GID range.
 
 ### Logging
 
-Log verbosity is controlled with the `RUST_LOG` environment variable:
+Log verbosity can be set in the config file:
+
+```toml
+log_level = "debug"
+```
+
+Or with the `RUST_LOG` environment variable (takes precedence over the config file):
 
 ```
 RUST_LOG=pwldapd=debug pwldapd
 ```
+
+Both accept full tracing filter syntax, e.g. `"pwldapd=debug"` or `"debug"`. The default is `pwldapd=info`.
 
 ## PAM configuration
 

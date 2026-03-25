@@ -105,8 +105,9 @@ the base DN derived from the system hostname, and all UIDs and GIDs served.
 .B pwldapd
 accepts a TOML configuration file specified with
 .BR \-\-config .
-No default file path is consulted; the file is only loaded when the flag
-is given explicitly.
+If the flag is omitted,
+.B /etc/pwldapd.conf
+is loaded automatically when present.
 .PP
 All fields are optional.
 Unknown fields are rejected at startup so that typos are caught immediately
@@ -125,6 +126,7 @@ uid_ranges = ["1000\-65535"]
 gid_ranges = ["1000\-65535"]
 tls_cert   = "/etc/ssl/certs/ldap.pem"
 tls_key    = "/etc/ssl/private/ldap.key"
+log_level  = "info"
 
 [user_attributes]
 mail       = "{uid}@example.com"
@@ -390,29 +392,32 @@ Or use a service manager that provides socket activation.
 .
 .SH LOGGING
 Log verbosity is controlled by the
+.B log_level
+configuration key or the
 .B RUST_LOG
 environment variable.
 The default level is
 .BR info ,
 which logs listener startup, each new connection, and all bind outcomes.
 .PP
-To enable debug logging for
+To set the log level in the configuration file:
+.PP
+.RS
+.nf
+log_level = "debug"
+.fi
+.RE
+.PP
+.B RUST_LOG
+takes precedence over
+.BR log_level .
+Both accept the full tracing filter syntax; for example,
+.B pwldapd=debug
+enables debug logging for
 .B pwldapd
-only:
-.PP
-.RS
-.nf
-RUST_LOG=pwldapd=debug pwldapd
-.fi
-.RE
-.PP
-To enable debug logging for all crates:
-.PP
-.RS
-.nf
-RUST_LOG=debug pwldapd
-.fi
-.RE
+only, while
+.B debug
+enables it for all crates.
 .
 .SH LIMITATIONS
 .B pwldapd
@@ -435,7 +440,9 @@ accepted on the wire but ignored).
 .SH ENVIRONMENT
 .TP
 .B RUST_LOG
-Controls log verbosity.
+Controls log verbosity; overrides
+.B log_level
+in the configuration file.
 See
 .BR LOGGING .
 .
@@ -446,9 +453,10 @@ PAM service configuration for bind authentication.
 Must be created before starting the daemon.
 .TP
 .B /etc/pwldapd.conf
-Conventional path for the TOML configuration file.
-Not consulted automatically; pass it with
-.BR \-\-config .
+Default TOML configuration file.
+Loaded automatically if present when
+.B \-\-config
+is not specified.
 .
 .SH EXAMPLES
 Serve local users on the loopback with default settings:
