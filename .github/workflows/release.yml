@@ -1,4 +1,4 @@
-name: Build .deb artifact
+name: Build release
 on:
   push:
     tags:
@@ -6,8 +6,12 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-deb:
+  release:
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
     steps:
       - uses: actions/checkout@v4
 
