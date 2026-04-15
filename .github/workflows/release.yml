@@ -1,0 +1,30 @@
+name: Build .deb artifact
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libpam0g-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb
+
+      - name: Build Debian Package
+        run: cargo deb
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian-package
+          path: target/debian/*.deb
