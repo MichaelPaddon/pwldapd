@@ -28,3 +28,8 @@ jobs:
         with:
           name: debian-package
           path: target/debian/*.deb
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/debian/*.deb
