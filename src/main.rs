@@ -35,7 +35,7 @@ struct Cli {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    const DEFAULT_CONFIG: &str = "/etc/pwldapd.conf";
+    const DEFAULT_CONFIG: &str = "/etc/pwldapd.toml";
 
     let file_config = if let Some(path) = cli.config.as_deref() {
         Some(config::load_file_config(path)?)

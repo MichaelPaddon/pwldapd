@@ -69,7 +69,7 @@ sudo systemctl start pwldapd
 pwldapd [-c FILE]
 ```
 
-If `-c` is not given, `pwldapd` looks for `/etc/pwldapd.conf` and loads it
+If `-c` is not given, `pwldapd` looks for `/etc/pwldapd.toml` and loads it
 if present. Without any config file it starts with built-in defaults:
 listening on `127.0.0.1:389`, base DN derived from the system hostname, and
 all UIDs and GIDs served.
@@ -77,18 +77,19 @@ all UIDs and GIDs served.
 ### Configuration file
 
 Load a TOML configuration file with `--config` (or place it at
-`/etc/pwldapd.conf` for automatic loading). An example covering every option:
+`/etc/pwldapd.toml` for automatic loading). An example covering every option:
 
 ```toml
-include    = ["/etc/pwldapd.d/*.conf"]
-listen     = ["127.0.0.1:389"]
-tls_listen = ["[::]:636"]
-base_dn    = "dc=example,dc=com"
-uid_ranges = ["1000-65535"]
-gid_ranges = ["1000-65535"]
-tls_cert   = "/etc/ssl/certs/ldap.pem"
-tls_key    = "/etc/ssl/private/ldap.key"
-log_level  = "info"
+include     = ["/etc/pwldapd.d/*.conf"]
+listen      = ["127.0.0.1:389"]
+tls_listen  = ["[::]:636"]
+unix_listen = ["/run/pwldapd/ldap.sock"]
+base_dn     = "dc=example,dc=com"
+uid_ranges  = ["1000-65535"]
+gid_ranges  = ["1000-65535"]
+tls_cert    = "/etc/ssl/certs/ldap.pem"
+tls_key     = "/etc/ssl/private/ldap.key"
+log_level   = "info"
 
 [user_attributes]
 mail       = "{uid}@example.com"
@@ -103,6 +104,10 @@ The `include` field takes a list of glob patterns. Each matching file is
 loaded and merged before the values in the main file; the main file always
 takes precedence. Included files may not themselves contain `include`
 directives.
+
+A port may be omitted from `listen` and `tls_listen` addresses; `:389`
+and `:636` are appended automatically. To suppress the default TCP listener
+(`127.0.0.1:389`), set `listen = []` explicitly.
 
 Unknown keys in the file are treated as errors so that typos are caught
 at startup rather than silently ignored.
@@ -179,6 +184,28 @@ tls_cert   = "/etc/ssl/certs/ldap.pem"
 tls_key    = "/etc/ssl/private/ldap.key"
 ```
 
+### Unix domain sockets
+
+Set `unix_listen` to a list of socket paths to accept connections over a
+Unix domain socket. This is useful for local clients that do not need
+network access:
+
+```toml
+unix_listen = ["/run/pwldapd/ldap.sock"]
+```
+
+Multiple paths are supported. Plain TCP, TLS, and Unix listeners can all
+run simultaneously.
+
+If a socket file already exists at the path when the daemon starts (e.g.
+from a previous run), it is removed and recreated automatically.
+
+Clients connect using the `ldapi://` URI scheme. With `ldapsearch`:
+
+```
+ldapsearch -H ldapi:///run/pwldapd/ldap.sock -x -b dc=example,dc=com
+```
+
 ### UID and GID ranges
 
 Use `uid_ranges` and `gid_ranges` to limit which accounts and groups are
@@ -251,6 +278,13 @@ Point your LDAP client at the daemon. With `nss-pam-ldapd` or `sssd`, use:
 
 ```
 uri     ldap://127.0.0.1/
+base    dc=host,dc=example,dc=com
+```
+
+Or, if you configured a Unix domain socket:
+
+```
+uri     ldapi:///run/pwldapd/ldap.sock
 base    dc=host,dc=example,dc=com
 ```
 

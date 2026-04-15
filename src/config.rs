@@ -25,6 +25,8 @@ pub struct Config {
     pub tls_cert: Option<PathBuf>,
     /// PEM TLS private key path. Required when tls_listen is non-empty.
     pub tls_key: Option<PathBuf>,
+    /// Unix domain socket paths to listen on.
+    pub unix_listen: Vec<PathBuf>,
     /// Extra attributes added to every user entry, in declaration order.
     pub user_attributes: Vec<(String, AttrValue)>,
     /// Per-user attribute overrides keyed by username. Fixed strings only;
@@ -99,6 +101,7 @@ pub struct FileConfig {
     pub gid_ranges:      Option<Vec<GidRange>>,
     pub tls_cert:        Option<PathBuf>,
     pub tls_key:         Option<PathBuf>,
+    pub unix_listen:     Option<Vec<PathBuf>>,
     pub user_attributes: Option<HashMap<String, String>>,
     pub user_overrides:  Option<HashMap<String, HashMap<String, String>>>,
     pub log_level:       Option<String>,
@@ -148,8 +151,9 @@ fn merge_file_configs(base: FileConfig, overlay: FileConfig) -> FileConfig {
         base_dn:    overlay.base_dn.or(base.base_dn),
         uid_ranges: overlay.uid_ranges.or(base.uid_ranges),
         gid_ranges: overlay.gid_ranges.or(base.gid_ranges),
-        tls_cert:   overlay.tls_cert.or(base.tls_cert),
-        tls_key:    overlay.tls_key.or(base.tls_key),
+        tls_cert:    overlay.tls_cert.or(base.tls_cert),
+        tls_key:     overlay.tls_key.or(base.tls_key),
+        unix_listen: overlay.unix_listen.or(base.unix_listen),
         user_attributes: merge_maps(base.user_attributes, overlay.user_attributes),
         user_overrides: merge_override_maps(base.user_overrides, overlay.user_overrides),
         log_level: overlay.log_level.or(base.log_level),
@@ -233,6 +237,7 @@ pub fn merge_config(file: Option<FileConfig>) -> Result<Config> {
 
     let tls_cert = fc.tls_cert;
     let tls_key  = fc.tls_key;
+    let unix_listen = fc.unix_listen.unwrap_or_default();
 
     if !tls_listen.is_empty() && (tls_cert.is_none() || tls_key.is_none()) {
         anyhow::bail!("tls_listen requires tls_cert and tls_key");
@@ -257,6 +262,7 @@ pub fn merge_config(file: Option<FileConfig>) -> Result<Config> {
     Ok(Config {
         listen,
         tls_listen,
+        unix_listen,
         base_dn,
         uid_ranges,
         gid_ranges,
@@ -411,7 +417,7 @@ pub fn derive_base_dn() -> Result<String> {
 
     bail!(
         "Cannot derive base DN from hostname {:?}. \
-         Specify --base-dn (e.g. --base-dn dc=example,dc=com).",
+         Set base_dn in the configuration file (e.g. base_dn = \"dc=example,dc=com\").",
         hostname
     )
 }
@@ -493,6 +499,7 @@ mod tests {
         Config {
             listen: vec![],
             tls_listen: vec![],
+            unix_listen: vec![],
             base_dn: String::new(),
             uid_ranges: vec![],
             gid_ranges: vec![],
@@ -731,6 +738,7 @@ mod tests {
         assert!(cfg.tls_cert.is_none());
         assert!(cfg.user_attributes.is_empty());
         assert!(cfg.user_overrides.is_empty());
+        assert!(cfg.unix_listen.is_empty());
         assert!(!cfg.base_dn.is_empty());
     }
 
@@ -872,6 +880,33 @@ mail = "alice@external.com"
         let fc: FileConfig = toml::from_str(toml).unwrap();
         let ov = fc.user_overrides.unwrap();
         assert_eq!(ov["alice"]["mail"], "alice@external.com");
+    }
+
+    #[test]
+    fn file_config_parses_unix_listen() {
+        let toml = r#"unix_listen = ["/run/pwldapd/ldap.sock", "/tmp/ldap.sock"]"#;
+        let fc: FileConfig = toml::from_str(toml).unwrap();
+        let paths = fc.unix_listen.unwrap();
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0], std::path::Path::new("/run/pwldapd/ldap.sock"));
+        assert_eq!(paths[1], std::path::Path::new("/tmp/ldap.sock"));
+    }
+
+    #[test]
+    fn merge_config_unix_listen_applied() {
+        let fc = FileConfig {
+            unix_listen: Some(vec![
+                "/run/pwldapd/ldap.sock".into(),
+                "/tmp/ldap.sock".into(),
+            ]),
+            base_dn: Some("dc=test,dc=com".into()),
+            ..Default::default()
+        };
+        let cfg = merge_config(Some(fc)).unwrap();
+        assert_eq!(cfg.unix_listen, vec![
+            std::path::PathBuf::from("/run/pwldapd/ldap.sock"),
+            std::path::PathBuf::from("/tmp/ldap.sock"),
+        ]);
     }
 
     #[test]

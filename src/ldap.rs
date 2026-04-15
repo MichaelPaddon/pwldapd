@@ -189,7 +189,8 @@ fn parse_search_request(buf: &[u8]) -> BerResult<SearchRequest> {
     let scope = match scope_val {
         0 => Scope::Base,
         1 => Scope::OneLevel,
-        _ => Scope::WholeSubtree,
+        2 => Scope::WholeSubtree,
+        _ => return Err(BerError::InvalidValue),
     };
 
     Ok(SearchRequest { base_dn, scope, filter, attributes })

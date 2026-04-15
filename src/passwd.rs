@@ -25,9 +25,31 @@ pub struct Group {
 
 pub fn get_user_by_name(name: &str) -> Option<User> {
     let cname = CString::new(name).ok()?;
-    unsafe {
-        let pw = libc::getpwnam(cname.as_ptr());
-        if pw.is_null() { None } else { Some(passwd_to_user(&*pw)) }
+    let mut pwd = unsafe { std::mem::zeroed::<libc::passwd>() };
+    let mut buf = vec![0u8; 1024];
+    loop {
+        let mut result: *mut libc::passwd = std::ptr::null_mut();
+        let rc = unsafe {
+            libc::getpwnam_r(
+                cname.as_ptr(),
+                &mut pwd,
+                buf.as_mut_ptr() as *mut libc::c_char,
+                buf.len(),
+                &mut result,
+            )
+        };
+        if rc == 0 {
+            return if result.is_null() {
+                None
+            } else {
+                Some(unsafe { passwd_to_user(&*result) })
+            };
+        }
+        if rc == libc::ERANGE && buf.len() < 64 * 1024 {
+            buf.resize(buf.len() * 2, 0);
+        } else {
+            return None;
+        }
     }
 }
 

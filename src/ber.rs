@@ -15,6 +15,8 @@ pub enum BerError {
     LengthOutOfRange,
     #[error("Filter nesting too deep")]
     NestingTooDeep,
+    #[error("Invalid value")]
+    InvalidValue,
 }
 
 pub type BerResult<T> = Result<T, BerError>;

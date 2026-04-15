@@ -93,7 +93,7 @@ for the attribute extension syntax.
 When this option is omitted,
 .B pwldapd
 looks for
-.B /etc/pwldapd.conf
+.B /etc/pwldapd.toml
 and loads it if present.
 If neither an explicit path nor the default file is found,
 .B pwldapd
@@ -106,27 +106,27 @@ the base DN derived from the system hostname, and all UIDs and GIDs served.
 accepts a TOML configuration file specified with
 .BR \-\-config .
 If the flag is omitted,
-.B /etc/pwldapd.conf
+.B /etc/pwldapd.toml
 is loaded automatically when present.
 .PP
 All fields are optional.
 Unknown fields are rejected at startup so that typos are caught immediately
 rather than silently ignored.
-Command-line arguments always override the corresponding file values.
 .PP
 An annotated example covering every option:
 .PP
 .RS
 .nf
-include    = ["/etc/pwldapd.d/*.conf"]
-listen     = ["127.0.0.1:389"]
-tls_listen = ["[::]:636"]
-base_dn    = "dc=example,dc=com"
-uid_ranges = ["1000\-65535"]
-gid_ranges = ["1000\-65535"]
-tls_cert   = "/etc/ssl/certs/ldap.pem"
-tls_key    = "/etc/ssl/private/ldap.key"
-log_level  = "info"
+include     = ["/etc/pwldapd.d/*.conf"]
+listen      = ["127.0.0.1:389"]
+tls_listen  = ["[::]:636"]
+unix_listen = ["/run/pwldapd/ldap.sock"]
+base_dn     = "dc=example,dc=com"
+uid_ranges  = ["1000\-65535"]
+gid_ranges  = ["1000\-65535"]
+tls_cert    = "/etc/ssl/certs/ldap.pem"
+tls_key     = "/etc/ssl/private/ldap.key"
+log_level   = "info"
 
 [user_attributes]
 mail       = "{uid}@example.com"
@@ -147,15 +147,35 @@ Included files may not themselves contain
 .B include
 directives.
 .PP
-The
+Each entry in
 .B uid_ranges
 and
 .B gid_ranges
-values use the same
-.I N
-or
-.I N\-M
-syntax as the corresponding command-line options.
+is either a single number
+.RI ( N )
+or an inclusive range
+.RI ( N\-M ).
+.PP
+If a port is omitted from a
+.B listen
+address,
+.B :389
+is appended automatically.
+For
+.BR tls_listen ,
+the default port is
+.BR :636 .
+To suppress the built-in default of
+.BR 127.0.0.1:389 ,
+set
+.B listen
+to an empty list:
+.PP
+.RS
+.nf
+listen = []
+.fi
+.RE
 .PP
 The
 .B [user_attributes]
@@ -228,8 +248,8 @@ are fixed strings; template placeholders are not expanded.
 .
 .SH BASE DN DERIVATION
 When
-.B \-\-base\-dn
-is not specified,
+.B base_dn
+is not set in the configuration file,
 .B pwldapd
 derives the base DN from the system hostname:
 .IP 1. 4
@@ -258,18 +278,31 @@ and repeat step\ 2 with the returned FQDN.
 .PP
 If the base DN cannot be determined,
 .B pwldapd
-exits with an error and the operator must supply
-.BR \-\-base\-dn .
+exits with an error and
+.B base_dn
+must be set explicitly in the configuration file.
 .
 .SH IPv6
-IPv6 addresses must be enclosed in square brackets:
+IPv6 addresses must be enclosed in square brackets in
+.B listen
+and
+.BR tls_listen :
 .PP
 .RS
 .nf
-pwldapd \-\-listen [::1]:389
-pwldapd \-\-listen [::]:389
+listen     = ["[::1]:389"]
+tls_listen = ["[::]:636"]
 .fi
 .RE
+.PP
+If a port is omitted from a
+.B listen
+address,
+.B :389
+is appended automatically; for
+.BR tls_listen ,
+.B :636
+is used.
 .
 .SH TLS (LDAPS)
 .B pwldapd
@@ -277,19 +310,18 @@ supports TLS via the LDAPS convention (a separate port, typically 636,
 where TLS is negotiated immediately upon connection).
 StartTLS is not supported.
 .PP
-To enable TLS, supply both
-.B \-\-tls\-cert
-and
-.B \-\-tls\-key
-together with one or more
-.B \-\-tls\-listen
-addresses:
+To enable TLS, set
+.BR tls_cert ,
+.BR tls_key ,
+and one or more
+.B tls_listen
+addresses in the configuration file:
 .PP
 .RS
 .nf
-pwldapd \-\-tls\-listen [::]:636 \e
-        \-\-tls\-cert /etc/ssl/certs/ldap.pem \e
-        \-\-tls\-key  /etc/ssl/private/ldap.key
+tls_listen = ["[::]:636"]
+tls_cert   = "/etc/ssl/certs/ldap.pem"
+tls_key    = "/etc/ssl/private/ldap.key"
 .fi
 .RE
 .PP
@@ -297,10 +329,47 @@ Plain and TLS listeners can coexist:
 .PP
 .RS
 .nf
-pwldapd \-\-listen 127.0.0.1:389 \e
-        \-\-tls\-listen [::]:636  \e
-        \-\-tls\-cert /etc/ssl/certs/ldap.pem \e
-        \-\-tls\-key  /etc/ssl/private/ldap.key
+listen     = ["127.0.0.1:389"]
+tls_listen = ["[::]:636"]
+tls_cert   = "/etc/ssl/certs/ldap.pem"
+tls_key    = "/etc/ssl/private/ldap.key"
+.fi
+.RE
+.
+.SH UNIX DOMAIN SOCKETS
+.B pwldapd
+can accept connections over Unix domain sockets in addition to, or instead
+of, TCP/IP.
+This is useful for local clients that do not require network access.
+.PP
+Set
+.B unix_listen
+in the configuration file to a list of socket paths:
+.PP
+.RS
+.nf
+unix_listen = ["/run/pwldapd/ldap.sock"]
+.fi
+.RE
+.PP
+Multiple paths are supported.
+Plain TCP, TLS, and Unix listeners can all run simultaneously.
+.PP
+If a socket file already exists at the given path when the daemon starts
+(for example, left behind by a previous run), it is removed and recreated
+automatically.
+.PP
+Clients connect using the
+.B ldapi://
+URI scheme.
+The path is encoded as a URL, with
+.B /
+characters replaced by
+.BR %2F :
+.PP
+.RS
+.nf
+ldapsearch \-H ldapi:///run/pwldapd/ldap.sock \-x \-b dc=example,dc=com
 .fi
 .RE
 .
@@ -452,7 +521,7 @@ See
 PAM service configuration for bind authentication.
 Must be created before starting the daemon.
 .TP
-.B /etc/pwldapd.conf
+.B /etc/pwldapd.toml
 Default TOML configuration file.
 Loaded automatically if present when
 .B \-\-config
@@ -471,12 +540,12 @@ Load all settings from a configuration file:
 .PP
 .RS
 .nf
-pwldapd \-\-config /etc/pwldapd.conf
+pwldapd \-\-config /etc/pwldapd.toml
 .fi
 .RE
 .PP
 Typical
-.B /etc/pwldapd.conf
+.B /etc/pwldapd.toml
 serving on all interfaces with TLS:
 .PP
 .RS
@@ -490,11 +559,30 @@ tls_key    = "/etc/ssl/private/ldap.key"
 .fi
 .RE
 .PP
-Point an NSS/LDAP client at a running instance:
+Serve only on a Unix domain socket (no TCP):
+.PP
+.RS
+.nf
+listen      = []
+unix_listen = ["/run/pwldapd/ldap.sock"]
+base_dn     = "dc=corp,dc=example,dc=com"
+.fi
+.RE
+.PP
+Point an NSS/LDAP client at a running TCP instance:
 .PP
 .RS
 .nf
 uri     ldap://127.0.0.1/
+base    dc=host,dc=example,dc=com
+.fi
+.RE
+.PP
+Or, when using a Unix domain socket:
+.PP
+.RS
+.nf
+uri     ldapi:///run/pwldapd/ldap.sock
 base    dc=host,dc=example,dc=com
 .fi
 .RE

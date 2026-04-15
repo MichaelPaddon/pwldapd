@@ -8,25 +8,18 @@ use crate::ldap::{
 };
 use crate::{passwd, pam_auth};
 use anyhow::Result;
-use std::net::SocketAddr;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tracing::{debug, info, warn};
 use zeroize::Zeroizing;
 
-enum BindState {
-    Anonymous,
-    Authenticated,
-}
-
 pub async fn handle_connection<S>(
     mut stream: S,
     config: Config,
-    peer: SocketAddr,
+    peer: &str,
 ) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    let mut bind_state = BindState::Anonymous;
     loop {
         let msg_bytes = match read_ldap_message(&mut stream).await {
             Ok(b) => b,
@@ -75,8 +68,7 @@ where
                 debug!("AbandonRequest for msg {id}");
             }
             LdapOperation::BindRequest(req) => {
-                let result =
-                    do_bind(&req, &mut bind_state, &config, peer).await;
+                let result = do_bind(&req, &config, peer).await;
                 let resp = LdapMessage {
                     message_id: msg.message_id,
                     operation: LdapOperation::BindResponse(result),
@@ -95,18 +87,15 @@ where
 
 async fn do_bind(
     req: &ldap::BindRequest,
-    state: &mut BindState,
     config: &Config,
-    peer: SocketAddr,
+    peer: &str,
 ) -> LdapResult {
     let ldap::BindAuth::Simple(password) = &req.auth;
     if req.name.is_empty() && password.is_empty() {
-        *state = BindState::Anonymous;
         info!("{peer} anonymous bind");
         return LdapResult::success();
     }
     if password.is_empty() {
-        *state = BindState::Anonymous;
         info!("{peer} bind failed (empty password) dn={}", req.name);
         return LdapResult::error(
             ldap::INVALID_CREDENTIALS,
@@ -132,13 +121,14 @@ async fn do_bind(
         }
     })
     .await
-    .unwrap_or(false);
+    .unwrap_or_else(|e| {
+        tracing::error!("PAM task panicked: {e}");
+        false
+    });
     if ok {
-        *state = BindState::Authenticated;
         info!("{peer} bind ok dn={}", req.name);
         LdapResult::success()
     } else {
-        *state = BindState::Anonymous;
         info!("{peer} bind failed dn={}", req.name);
         LdapResult::error(ldap::INVALID_CREDENTIALS, "Invalid credentials")
     }
@@ -557,6 +547,7 @@ mod tests {
         Config {
             listen: vec![],
             tls_listen: vec![],
+            unix_listen: vec![],
             base_dn: "dc=example,dc=com".into(),
             uid_ranges: vec![],
             gid_ranges: vec![],
@@ -573,6 +564,7 @@ mod tests {
         Config {
             listen: vec![],
             tls_listen: vec![],
+            unix_listen: vec![],
             base_dn: "dc=example,dc=com".into(),
             uid_ranges: ranges,
             gid_ranges: vec![],
@@ -589,6 +581,7 @@ mod tests {
         Config {
             listen: vec![],
             tls_listen: vec![],
+            unix_listen: vec![],
             base_dn: "dc=example,dc=com".into(),
             uid_ranges: vec![],
             gid_ranges: ranges,
@@ -1154,6 +1147,7 @@ mod tests {
         Config {
             listen: vec![],
             tls_listen: vec![],
+            unix_listen: vec![],
             base_dn: "dc=example,dc=com".into(),
             uid_ranges: vec![],
             gid_ranges: vec![],
