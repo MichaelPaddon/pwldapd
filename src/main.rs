@@ -11,33 +11,50 @@ mod pam_auth;
 mod server;
 
 use anyhow::Result;
-use clap::Parser;
 use std::path::PathBuf;
 use tracing::info;
 
-#[derive(Parser, Debug)]
-#[command(
-    name = "pwldapd",
-    version,
-    about = "LDAP daemon backed by the POSIX password database and PAM",
-    long_about = "Serves local users and groups over LDAP (RFC 4510). \
-                  Binds are authenticated via PAM. \
-                  All options are set via the TOML configuration file. \
-                  See pwldapd(8) for details."
-)]
-struct Cli {
-    /// Path to TOML configuration file.
-    #[arg(short = 'c', long, value_name = "FILE")]
-    config: Option<PathBuf>,
+fn parse_args() -> Option<PathBuf> {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-c" | "--config" => match args.next() {
+                Some(path) => return Some(PathBuf::from(path)),
+                None => {
+                    eprintln!("error: '{}' requires a FILE argument", arg);
+                    std::process::exit(1);
+                }
+            },
+            "-h" | "--help" => {
+                println!(
+                    "Usage: pwldapd [-c FILE]\n\
+                     \nOptions:\n  \
+                     -c, --config FILE  Path to TOML configuration file\n  \
+                     -h, --help         Print this help message\n  \
+                     -V, --version      Print version"
+                );
+                std::process::exit(0);
+            }
+            "-V" | "--version" => {
+                println!("pwldapd {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
+            other => {
+                eprintln!("error: unexpected argument '{other}'; try --help");
+                std::process::exit(1);
+            }
+        }
+    }
+    None
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let config_path = parse_args();
 
     const DEFAULT_CONFIG: &str = "/etc/pwldapd.toml";
 
-    let file_config = if let Some(path) = cli.config.as_deref() {
+    let file_config = if let Some(path) = config_path.as_deref() {
         Some(config::load_file_config(path)?)
     } else if std::path::Path::new(DEFAULT_CONFIG).exists() {
         Some(config::load_file_config(std::path::Path::new(DEFAULT_CONFIG))?)

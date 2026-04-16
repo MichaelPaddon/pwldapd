@@ -28,7 +28,8 @@ BSD format to populate `givenName`, `roomNumber`, `telephoneNumber`, and
 Additional attributes can be added to user entries via the configuration
 file (see [User attributes](#user-attributes) below).
 
-Bind requests are authenticated via PAM. Anonymous binds are accepted.
+Bind requests are authenticated via PAM. Anonymous binds are accepted by
+default; use `require_bind` to restrict searches to specific accounts.
 
 ## Building
 
@@ -80,16 +81,17 @@ Load a TOML configuration file with `--config` (or place it at
 `/etc/pwldapd.toml` for automatic loading). An example covering every option:
 
 ```toml
-include     = ["/etc/pwldapd.d/*.conf"]
-listen      = ["127.0.0.1:389"]
-tls_listen  = ["[::]:636"]
-unix_listen = ["/run/pwldapd/ldap.sock"]
-base_dn     = "dc=example,dc=com"
-uid_ranges  = ["1000-65535"]
-gid_ranges  = ["1000-65535"]
-tls_cert    = "/etc/ssl/certs/ldap.pem"
-tls_key     = "/etc/ssl/private/ldap.key"
-log_level   = "info"
+include      = ["/etc/pwldapd.d/*.conf"]
+listen       = ["127.0.0.1:389"]
+tls_listen   = ["[::]:636"]
+unix_listen  = ["/run/pwldapd/ldap.sock"]
+base_dn      = "dc=example,dc=com"
+uid_ranges   = ["1000-65535"]
+gid_ranges   = ["1000-65535"]
+tls_cert     = "/etc/ssl/certs/ldap.pem"
+tls_key      = "/etc/ssl/private/ldap.key"
+log_level    = "info"
+require_bind = ["svcaccount"]
 
 [user_attributes]
 mail       = "{uid}@example.com"
@@ -218,6 +220,32 @@ gid_ranges = ["1000-65535"]
 
 Without `gid_ranges`, all groups are served. Primary groups of served users
 are always visible regardless of the GID range.
+
+### Requiring a bind before searches
+
+By default any client — including unauthenticated anonymous clients — may
+perform searches. Set `require_bind` to a list of account names to restrict
+this: a client must successfully bind as one of those accounts before any
+search request is permitted.
+
+```toml
+require_bind = ["svcaccount"]
+```
+
+This is intended for service accounts that need to authenticate themselves
+to the server before retrieving directory data. When `require_bind` is set:
+
+- An anonymous bind succeeds but subsequent searches return
+  `INSUFFICIENT_ACCESS_RIGHTS` (LDAP result code 50).
+- A bind as an account not in the list fails with `INVALID_CREDENTIALS`
+  (the account is rejected by PAM), so searches remain blocked.
+- A bind as a listed account succeeds; searches are then permitted for
+  the remainder of that connection.
+- Re-binding anonymously or failing a bind clears the authenticated
+  identity; searches are blocked again until a successful bind.
+
+When `require_bind` is empty (the default) all clients may search without
+binding.
 
 ### Logging
 

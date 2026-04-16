@@ -1,23 +1,32 @@
 /// Minimal BER encoder/decoder for the subset of ASN.1 used by LDAP.
-use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum BerError {
-    #[error("Unexpected end of input")]
     UnexpectedEof,
-    #[error("Long-form tag not supported")]
     LongFormTag,
-    #[error("Unexpected tag: expected {expected:#04x}, got {got:#04x}")]
     UnexpectedTag { expected: u8, got: u8 },
-    #[error("Invalid UTF-8")]
     InvalidUtf8,
-    #[error("Length out of range")]
     LengthOutOfRange,
-    #[error("Filter nesting too deep")]
     NestingTooDeep,
-    #[error("Invalid value")]
     InvalidValue,
 }
+
+impl std::fmt::Display for BerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnexpectedEof    => write!(f, "Unexpected end of input"),
+            Self::LongFormTag      => write!(f, "Long-form tag not supported"),
+            Self::UnexpectedTag { expected, got }
+                                   => write!(f, "Unexpected tag: expected {expected:#04x}, got {got:#04x}"),
+            Self::InvalidUtf8      => write!(f, "Invalid UTF-8"),
+            Self::LengthOutOfRange => write!(f, "Length out of range"),
+            Self::NestingTooDeep   => write!(f, "Filter nesting too deep"),
+            Self::InvalidValue     => write!(f, "Invalid value"),
+        }
+    }
+}
+
+impl std::error::Error for BerError {}
 
 pub type BerResult<T> = Result<T, BerError>;
 

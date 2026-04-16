@@ -20,6 +20,7 @@ pub async fn handle_connection<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
+    let mut bound_as: Option<String> = None;
     loop {
         let msg_bytes = match read_ldap_message(&mut stream).await {
             Ok(b) => b,
@@ -68,7 +69,8 @@ where
                 debug!("AbandonRequest for msg {id}");
             }
             LdapOperation::BindRequest(req) => {
-                let result = do_bind(&req, &config, peer).await;
+                let (result, username) = do_bind(&req, &config, peer).await;
+                bound_as = username;
                 let resp = LdapMessage {
                     message_id: msg.message_id,
                     operation: LdapOperation::BindResponse(result),
@@ -76,7 +78,11 @@ where
                 stream.write_all(&ldap::encode_message(&resp)).await?;
             }
             LdapOperation::SearchRequest(req) => {
-                do_search(&req, msg.message_id, &config, &mut stream).await?;
+                let authorized = match &bound_as {
+                    Some(u) => config.bind_permitted(u),
+                    None    => config.require_bind.is_empty(),
+                };
+                do_search(&req, msg.message_id, &config, &mut stream, authorized).await?;
             }
             other => {
                 warn!("Unhandled op: {:?}", std::mem::discriminant(&other));
@@ -89,17 +95,17 @@ async fn do_bind(
     req: &ldap::BindRequest,
     config: &Config,
     peer: &str,
-) -> LdapResult {
+) -> (LdapResult, Option<String>) {
     let ldap::BindAuth::Simple(password) = &req.auth;
     if req.name.is_empty() && password.is_empty() {
         info!("{peer} anonymous bind");
-        return LdapResult::success();
+        return (LdapResult::success(), None);
     }
     if password.is_empty() {
         info!("{peer} bind failed (empty password) dn={}", req.name);
-        return LdapResult::error(
-            ldap::INVALID_CREDENTIALS,
-            "Invalid credentials",
+        return (
+            LdapResult::error(ldap::INVALID_CREDENTIALS, "Invalid credentials"),
+            None,
         );
     }
     let username = uid_from_dn(&req.name)
@@ -108,13 +114,14 @@ async fn do_bind(
     // Zeroize ensures the password copy is wiped from memory when dropped.
     let password = Zeroizing::new(password.clone());
     let config = config.clone();
+    let username_clone = username.clone();
     let ok = tokio::task::spawn_blocking(move || {
-        if !pam_auth::authenticate(&username, &password) {
+        if !pam_auth::authenticate(&username_clone, &password) {
             return false;
         }
         // Deny bind if the user's UID falls outside the configured range.
         // This keeps authentication consistent with what the directory serves.
-        match passwd::get_user_by_name(&username) {
+        match passwd::get_user_by_name(&username_clone) {
             Some(u) => config.uid_allowed(u.uid),
             // Authenticated via PAM but no passwd entry; permit the bind.
             None => true,
@@ -127,10 +134,10 @@ async fn do_bind(
     });
     if ok {
         info!("{peer} bind ok dn={}", req.name);
-        LdapResult::success()
+        (LdapResult::success(), Some(username))
     } else {
         info!("{peer} bind failed dn={}", req.name);
-        LdapResult::error(ldap::INVALID_CREDENTIALS, "Invalid credentials")
+        (LdapResult::error(ldap::INVALID_CREDENTIALS, "Invalid credentials"), None)
     }
 }
 
@@ -139,7 +146,19 @@ async fn do_search<S: AsyncWrite + Unpin>(
     message_id: i64,
     config: &Config,
     stream: &mut S,
+    authorized: bool,
 ) -> Result<()> {
+    if !authorized {
+        let done = LdapMessage {
+            message_id,
+            operation: LdapOperation::SearchResultDone(LdapResult::error(
+                ldap::INSUFFICIENT_ACCESS_RIGHTS,
+                "Bind required",
+            )),
+        };
+        stream.write_all(&ldap::encode_message(&done)).await?;
+        return Ok(());
+    }
     let req2 = req.clone();
     let config = config.clone();
     let entries = tokio::task::spawn_blocking(move || {
@@ -555,6 +574,7 @@ mod tests {
             tls_key: None,
             user_attributes: vec![],
             user_overrides: std::collections::HashMap::new(),
+            require_bind: vec![],
         }
     }
 
@@ -572,6 +592,7 @@ mod tests {
             tls_key: None,
             user_attributes: vec![],
             user_overrides: std::collections::HashMap::new(),
+            require_bind: vec![],
         }
     }
 
@@ -589,6 +610,7 @@ mod tests {
             tls_key: None,
             user_attributes: vec![],
             user_overrides: std::collections::HashMap::new(),
+            require_bind: vec![],
         }
     }
 
@@ -1155,6 +1177,7 @@ mod tests {
             tls_key: None,
             user_attributes: attrs,
             user_overrides: overrides,
+            require_bind: vec![],
         }
     }
 
@@ -1241,6 +1264,96 @@ mod tests {
         // alice gets the template value, not bob's override
         let entry = user_entry(&alice(), &cfg);
         assert_eq!(attr_values(&entry, "mail"), vec!["alice@example.com"]);
+    }
+
+    // do_search authorization
+
+    /// Minimal AsyncWrite that accumulates bytes in a Vec.
+    struct CaptureBuf(Vec<u8>);
+
+    impl tokio::io::AsyncWrite for CaptureBuf {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            self.0.extend_from_slice(buf);
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    fn any_search() -> SearchRequest {
+        search(
+            "dc=example,dc=com",
+            Scope::WholeSubtree,
+            Filter::Present("objectClass".into()),
+        )
+    }
+
+    /// Decode the last LDAP message in `buf` and return `(message_id, result_code)`.
+    /// Walks through all complete messages (each is an outer SEQUENCE TLV) and
+    /// returns the operation tag and result code of the final one.
+    /// Panics unless the final message is a SearchResultDone (tag 0x65).
+    fn parse_last_search_result_done(buf: &[u8]) -> (i64, u32) {
+        const APP_SEARCH_RESULT_DONE: u8 = 0x65;
+        let mut remaining = buf;
+        let mut last = None;
+        while !remaining.is_empty() {
+            let (seq, rest) = ber::expect_tag(remaining, ber::TAG_SEQUENCE)
+                .expect("outer SEQUENCE");
+            // Determine how many bytes the entire TLV consumed.
+            let consumed = remaining.len() - rest.len();
+            remaining = rest;
+
+            let (message_id, op_bytes) = ber::decode_integer(seq).expect("message_id");
+            let (op_tag, op_value, _) = ber::parse_tlv(op_bytes).expect("operation TLV");
+            last = Some((consumed, message_id, op_tag, op_value.to_vec()));
+        }
+        let (_, message_id, op_tag, op_value) = last.expect("no messages in buffer");
+        assert_eq!(op_tag, APP_SEARCH_RESULT_DONE, "expected SearchResultDone");
+        let (result_code, _) = ber::decode_enumerated(&op_value).expect("result_code");
+        (message_id, result_code)
+    }
+
+    #[tokio::test]
+    async fn unauthorized_search_returns_insufficient_access_rights() {
+        let mut buf = CaptureBuf(vec![]);
+        do_search(&any_search(), 7, &cfg(), &mut buf, false)
+            .await
+            .unwrap();
+
+        let (message_id, result_code) = parse_last_search_result_done(&buf.0);
+        assert_eq!(message_id, 7);
+        assert_eq!(result_code, ldap::INSUFFICIENT_ACCESS_RIGHTS);
+    }
+
+    #[tokio::test]
+    async fn authorized_search_returns_success() {
+        // Use a base DN that does not match the config so collect_entries_from
+        // returns nothing, giving us exactly one message: SearchResultDone.
+        let req = search(
+            "dc=nonexistent,dc=invalid",
+            Scope::WholeSubtree,
+            Filter::Present("objectClass".into()),
+        );
+        let mut buf = CaptureBuf(vec![]);
+        do_search(&req, 3, &cfg(), &mut buf, true).await.unwrap();
+
+        let (message_id, result_code) = parse_last_search_result_done(&buf.0);
+        assert_eq!(message_id, 3);
+        assert_eq!(result_code, ldap::SUCCESS);
     }
 
     // uid_from_dn

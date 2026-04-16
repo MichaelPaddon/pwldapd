@@ -19,7 +19,10 @@ and
 .B posixGroup
 directory tree.
 Bind requests are authenticated via PAM.
-Anonymous binds are accepted.
+Anonymous binds are accepted by default; the
+.B require_bind
+configuration option can restrict searches to specific accounts (see
+.BR "BIND REQUIREMENT" ).
 .PP
 The daemon is intended for use on a single host where LDAP-aware
 applications\(emsuch as SSH, sudo, or web servers\(emneed to look up
@@ -117,16 +120,17 @@ An annotated example covering every option:
 .PP
 .RS
 .nf
-include     = ["/etc/pwldapd.d/*.conf"]
-listen      = ["127.0.0.1:389"]
-tls_listen  = ["[::]:636"]
-unix_listen = ["/run/pwldapd/ldap.sock"]
-base_dn     = "dc=example,dc=com"
-uid_ranges  = ["1000\-65535"]
-gid_ranges  = ["1000\-65535"]
-tls_cert    = "/etc/ssl/certs/ldap.pem"
-tls_key     = "/etc/ssl/private/ldap.key"
-log_level   = "info"
+include      = ["/etc/pwldapd.d/*.conf"]
+listen       = ["127.0.0.1:389"]
+tls_listen   = ["[::]:636"]
+unix_listen  = ["/run/pwldapd/ldap.sock"]
+base_dn      = "dc=example,dc=com"
+uid_ranges   = ["1000\-65535"]
+gid_ranges   = ["1000\-65535"]
+tls_cert     = "/etc/ssl/certs/ldap.pem"
+tls_key      = "/etc/ssl/private/ldap.key"
+log_level    = "info"
+require_bind = ["svcaccount"]
 
 [user_attributes]
 mail       = "{uid}@example.com"
@@ -372,6 +376,44 @@ characters replaced by
 ldapsearch \-H ldapi:///run/pwldapd/ldap.sock \-x \-b dc=example,dc=com
 .fi
 .RE
+.
+.SH BIND REQUIREMENT
+By default any client\(emincluding unauthenticated anonymous clients\(emmay
+perform search requests.
+Setting
+.B require_bind
+to a list of account names restricts this: a client must successfully bind
+as one of the named accounts before any search is permitted.
+.PP
+.RS
+.nf
+require_bind = ["svcaccount"]
+.fi
+.RE
+.PP
+This is intended for service accounts that authenticate themselves to the
+server before retrieving directory data.
+.PP
+When
+.B require_bind
+is set:
+.IP \(bu 4
+An anonymous bind succeeds, but subsequent searches return result code 50
+.RB ( INSUFFICIENT_ACCESS_RIGHTS ).
+.IP \(bu 4
+A bind as an account not in the list fails with
+.B INVALID_CREDENTIALS
+(rejected by PAM); searches remain blocked.
+.IP \(bu 4
+A bind as a listed account succeeds; searches are permitted for the
+remainder of that connection.
+.IP \(bu 4
+Re-binding anonymously, or a failed bind, clears the authenticated identity;
+searches are blocked again until a new successful bind.
+.PP
+When
+.B require_bind
+is empty (the default) all clients may search without binding.
 .
 .SH PAM CONFIGURATION
 .B pwldapd

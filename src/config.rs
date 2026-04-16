@@ -32,6 +32,9 @@ pub struct Config {
     /// Per-user attribute overrides keyed by username. Fixed strings only;
     /// these take precedence over user_attributes.
     pub user_overrides: HashMap<String, HashMap<String, String>>,
+    /// Usernames that must bind before searches are permitted.
+    /// Empty means no bind required (anonymous access allowed).
+    pub require_bind: Vec<String>,
 }
 
 impl Config {
@@ -54,6 +57,13 @@ impl Config {
     pub fn gid_allowed(&self, gid: u32) -> bool {
         self.gid_ranges.is_empty()
             || self.gid_ranges.iter().any(|r| r.contains(&gid))
+    }
+
+    /// Returns true if `username` is permitted to perform searches.
+    /// When `require_bind` is empty every client is permitted.
+    pub fn bind_permitted(&self, username: &str) -> bool {
+        self.require_bind.is_empty()
+            || self.require_bind.iter().any(|u| u == username)
     }
 }
 
@@ -105,6 +115,7 @@ pub struct FileConfig {
     pub user_attributes: Option<HashMap<String, String>>,
     pub user_overrides:  Option<HashMap<String, HashMap<String, String>>>,
     pub log_level:       Option<String>,
+    pub require_bind:    Option<Vec<String>>,
 }
 
 /// Load and parse a TOML config file from `path`, processing any `include`
@@ -157,6 +168,7 @@ fn merge_file_configs(base: FileConfig, overlay: FileConfig) -> FileConfig {
         user_attributes: merge_maps(base.user_attributes, overlay.user_attributes),
         user_overrides: merge_override_maps(base.user_overrides, overlay.user_overrides),
         log_level: overlay.log_level.or(base.log_level),
+        require_bind: overlay.require_bind.or(base.require_bind),
     }
 }
 
@@ -246,6 +258,7 @@ pub fn merge_config(file: Option<FileConfig>) -> Result<Config> {
     let user_attributes =
         build_attr_values(fc.user_attributes.unwrap_or_default())?;
     let user_overrides = fc.user_overrides.unwrap_or_default();
+    let require_bind = fc.require_bind.unwrap_or_default();
 
     // Warn at startup about any protected attributes in user_overrides.
     for (username, overrides) in &user_overrides {
@@ -270,6 +283,7 @@ pub fn merge_config(file: Option<FileConfig>) -> Result<Config> {
         tls_key,
         user_attributes,
         user_overrides,
+        require_bind,
     })
 }
 
@@ -507,6 +521,7 @@ mod tests {
             tls_key: None,
             user_attributes: vec![],
             user_overrides: HashMap::new(),
+            require_bind: vec![],
         }
     }
 
@@ -912,5 +927,42 @@ mail = "alice@external.com"
     #[test]
     fn file_config_rejects_unknown_field() {
         assert!(toml::from_str::<FileConfig>("bogus_field = 1").is_err());
+    }
+
+    // require_bind
+
+    #[test]
+    fn file_config_parses_require_bind() {
+        let toml = r#"require_bind = ["svcaccount", "monitor"]"#;
+        let fc: FileConfig = toml::from_str(toml).unwrap();
+        assert_eq!(fc.require_bind.unwrap(), vec!["svcaccount", "monitor"]);
+    }
+
+    #[test]
+    fn merge_config_propagates_require_bind() {
+        let fc = FileConfig {
+            require_bind: Some(vec!["svc".into()]),
+            base_dn: Some("dc=test,dc=com".into()),
+            ..Default::default()
+        };
+        let cfg = merge_config(Some(fc)).unwrap();
+        assert_eq!(cfg.require_bind, vec!["svc"]);
+    }
+
+    #[test]
+    fn bind_permitted_empty_allows_all() {
+        let cfg = empty_config();
+        assert!(cfg.bind_permitted("anyone"));
+        assert!(cfg.bind_permitted(""));
+    }
+
+    #[test]
+    fn bind_permitted_with_list() {
+        let mut cfg = empty_config();
+        cfg.require_bind = vec!["svc".into(), "monitor".into()];
+        assert!(cfg.bind_permitted("svc"));
+        assert!(cfg.bind_permitted("monitor"));
+        assert!(!cfg.bind_permitted("alice"));
+        assert!(!cfg.bind_permitted(""));
     }
 }

@@ -5,6 +5,7 @@ use crate::ber::{self, BerError, BerResult};
 pub const SUCCESS: u32 = 0;
 pub const PROTOCOL_ERROR: u32 = 2;
 pub const INVALID_CREDENTIALS: u32 = 49;
+pub const INSUFFICIENT_ACCESS_RIGHTS: u32 = 50;
 
 // Application tags
 const APP_BIND_REQUEST: u8 = 0x60;
