@@ -111,8 +111,7 @@ async fn do_bind(
     let username = uid_from_dn(&req.name)
         .unwrap_or(req.name.as_str())
         .to_string();
-    // Zeroize ensures the password copy is wiped from memory when dropped.
-    let password = Zeroizing::new(password.clone());
+    let password = password.clone();
     let config = config.clone();
     let username_clone = username.clone();
     let ok = tokio::task::spawn_blocking(move || {
@@ -1456,7 +1455,7 @@ const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024; // 16 MiB
 
 async fn read_ldap_message<S: AsyncRead + Unpin>(
     stream: &mut S,
-) -> std::io::Result<Vec<u8>> {
+) -> std::io::Result<Zeroizing<Vec<u8>>> {
     let mut tag = [0u8; 1];
     stream.read_exact(&mut tag).await?;
 
@@ -1489,5 +1488,5 @@ async fn read_ldap_message<S: AsyncRead + Unpin>(
     let mut content = vec![0u8; content_len];
     stream.read_exact(&mut content).await?;
     header.extend_from_slice(&content);
-    Ok(header)
+    Ok(Zeroizing::new(header))
 }

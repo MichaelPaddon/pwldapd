@@ -1,5 +1,6 @@
 /// LDAP protocol types, parser, encoder, and filter evaluator.
 use crate::ber::{self, BerError, BerResult};
+use zeroize::Zeroizing;
 
 // Result codes
 pub const SUCCESS: u32 = 0;
@@ -64,7 +65,7 @@ impl LdapResult {
 
 #[derive(Debug, Clone)]
 pub enum BindAuth {
-    Simple(String),
+    Simple(Zeroizing<String>),
 }
 
 #[derive(Debug, Clone)]
@@ -158,11 +159,13 @@ fn parse_bind_request(buf: &[u8]) -> BerResult<BindRequest> {
     let (auth_value, _) = ber::parse_tlv(rest).map(|(_, v, r)| (v, r))?;
     let auth = match auth_tag {
         CTX_SIMPLE_AUTH => {
-            let pw = String::from_utf8(auth_value.to_vec())
-                .map_err(|_| BerError::InvalidUtf8)?;
+            let pw = Zeroizing::new(
+                String::from_utf8(auth_value.to_vec())
+                    .map_err(|_| BerError::InvalidUtf8)?,
+            );
             BindAuth::Simple(pw)
         }
-        _ => BindAuth::Simple(String::new()),
+        _ => BindAuth::Simple(Zeroizing::new(String::new())),
     };
     Ok(BindRequest { name, auth })
 }
@@ -649,7 +652,7 @@ mod tests {
             else { panic!("wrong op") };
         assert_eq!(req.name, "");
         let BindAuth::Simple(pw) = req.auth;
-        assert_eq!(pw, "");
+        assert_eq!(*pw, "");
     }
 
     // Authenticated bind: msgId=2, version=3,
@@ -682,7 +685,7 @@ mod tests {
             else { panic!("wrong op") };
         assert_eq!(req.name, "uid=alice,ou=people,dc=local");
         let BindAuth::Simple(pw) = req.auth;
-        assert_eq!(pw, "secret");
+        assert_eq!(*pw, "secret");
     }
 
     // Message parsing: SearchRequest
