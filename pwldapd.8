@@ -356,6 +356,42 @@ unix_listen = ["/run/pwldapd/ldap.sock"]
 .fi
 .RE
 .PP
+Each entry may alternatively be an inline table specifying
+.BR path ,
+and the optional fields
+.BR owner ,
+.BR group ,
+and
+.BR mode :
+.PP
+.RS
+.nf
+unix_listen = [
+    { path = "/run/pwldapd/ldap.sock", owner = "root", group = "ldap", mode = 660 },
+]
+.fi
+.RE
+.PP
+.B mode
+uses chmod notation: octal digits written without a prefix, so
+.B 660
+means
+.BR 0o660 .
+The mode is applied with an exact
+.BR chmod (2)
+call after the socket is created; the process umask does not modify it.
+If
+.B mode
+is omitted the socket is created with the system default permissions
+(the process umask applies as normal).
+If
+.B owner
+or
+.B group
+is omitted the corresponding ownership is left unchanged.
+Both accept either a name or a numeric UID/GID.
+.PP
+The two forms may be mixed in the same list.
 Multiple paths are supported.
 Plain TCP, TLS, and Unix listeners can all run simultaneously.
 .PP

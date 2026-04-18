@@ -38,14 +38,25 @@ pub async fn run(config: Config) -> Result<()> {
         set.spawn(accept_tls(listener, acceptor, cfg));
     }
 
-    for path in &config.unix_listen {
+    for sock in &config.unix_listen {
         // Remove a stale socket file left by a previous run.
-        let _ = std::fs::remove_file(path);
-        let listener = UnixListener::bind(path)
-            .map_err(|e| anyhow::anyhow!("cannot bind to {:?}: {e}", path))?;
-        info!("Listening on {:?} (unix)", path);
+        let _ = std::fs::remove_file(&sock.path);
+        let listener = UnixListener::bind(&sock.path)
+            .map_err(|e| anyhow::anyhow!("cannot bind to {:?}: {e}", sock.path))?;
+        if let Some(mode) = sock.mode {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&sock.path, std::fs::Permissions::from_mode(mode))
+                .map_err(|e| anyhow::anyhow!("cannot set mode on {:?}: {e}", sock.path))?;
+        }
+        if sock.owner.is_some() || sock.group.is_some() {
+            let uid = sock.owner.as_deref().map(resolve_uid).transpose()?;
+            let gid = sock.group.as_deref().map(resolve_gid).transpose()?;
+            std::os::unix::fs::chown(&sock.path, uid, gid)
+                .map_err(|e| anyhow::anyhow!("cannot chown {:?}: {e}", sock.path))?;
+        }
+        info!("Listening on {:?} (unix)", sock.path);
         let cfg = config.clone();
-        let p = path.clone();
+        let p = sock.path.clone();
         set.spawn(accept_unix(listener, cfg, p));
     }
 
@@ -171,4 +182,32 @@ fn load_private_key(
     let mut reader = std::io::BufReader::new(file);
     rustls_pemfile::private_key(&mut reader)?
         .ok_or_else(|| anyhow::anyhow!("no private key found in {:?}", path))
+}
+
+/// Resolve a user name or decimal UID string to a numeric UID.
+fn resolve_uid(name: &str) -> Result<u32> {
+    if let Ok(n) = name.parse::<u32>() {
+        return Ok(n);
+    }
+    let cname = std::ffi::CString::new(name)
+        .map_err(|_| anyhow::anyhow!("invalid user name: {name:?}"))?;
+    let pw = unsafe { libc::getpwnam(cname.as_ptr()) };
+    if pw.is_null() {
+        anyhow::bail!("user not found: {name:?}");
+    }
+    Ok(unsafe { (*pw).pw_uid })
+}
+
+/// Resolve a group name or decimal GID string to a numeric GID.
+fn resolve_gid(name: &str) -> Result<u32> {
+    if let Ok(n) = name.parse::<u32>() {
+        return Ok(n);
+    }
+    let cname = std::ffi::CString::new(name)
+        .map_err(|_| anyhow::anyhow!("invalid group name: {name:?}"))?;
+    let gr = unsafe { libc::getgrnam(cname.as_ptr()) };
+    if gr.is_null() {
+        anyhow::bail!("group not found: {name:?}");
+    }
+    Ok(unsafe { (*gr).gr_gid })
 }

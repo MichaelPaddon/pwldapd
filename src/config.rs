@@ -25,8 +25,8 @@ pub struct Config {
     pub tls_cert: Option<PathBuf>,
     /// PEM TLS private key path. Required when tls_listen is non-empty.
     pub tls_key: Option<PathBuf>,
-    /// Unix domain socket paths to listen on.
-    pub unix_listen: Vec<PathBuf>,
+    /// Unix domain socket listeners.
+    pub unix_listen: Vec<UnixSocket>,
     /// Extra attributes added to every user entry, in declaration order.
     pub user_attributes: Vec<(String, AttrValue)>,
     /// Per-user attribute overrides keyed by username. Fixed strings only;
@@ -94,6 +94,48 @@ pub const KNOWN_VARS: &[&str] = &[
 pub const PROTECTED_ATTRS: &[&str] = &["objectClass", "uid", "uidNumber", "gidNumber"];
 
 // ---------------------------------------------------------------------------
+// Unix socket configuration
+// ---------------------------------------------------------------------------
+
+/// Runtime representation of a single Unix domain socket listener.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnixSocket {
+    pub path: PathBuf,
+    /// Optional owner (username or numeric UID) to `chown` after bind.
+    pub owner: Option<String>,
+    /// Optional group (group name or numeric GID) to `chown` after bind.
+    pub group: Option<String>,
+    /// Optional mode in chmod notation (e.g. `660` means `0o660`).
+    /// Applied exactly after bind; if absent the system default is used.
+    pub mode: Option<u32>,
+}
+
+/// Full inline-table form of a Unix socket entry in the config file.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct UnixSocketFull {
+    path:  PathBuf,
+    owner: Option<String>,
+    group: Option<String>,
+    mode:  Option<u32>,
+}
+
+/// Accepts either a plain path string or an inline table with `path` + options.
+#[derive(Debug, serde::Deserialize)]
+#[serde(untagged)]
+pub(crate) enum UnixSocketSpec {
+    Path(PathBuf),
+    Full(UnixSocketFull),
+}
+
+/// Reinterpret a decimal integer's digits as an octal mode value.
+/// `660` → `0o660`; returns an error if any digit is 8 or 9.
+fn parse_chmod_mode(n: u32) -> Result<u32> {
+    u32::from_str_radix(&format!("{n}"), 8)
+        .map_err(|_| anyhow::anyhow!("invalid mode {n}: digits must be in 0–7"))
+}
+
+// ---------------------------------------------------------------------------
 // File config (TOML deserialization)
 // ---------------------------------------------------------------------------
 
@@ -111,7 +153,7 @@ pub struct FileConfig {
     pub gid_ranges:      Option<Vec<GidRange>>,
     pub tls_cert:        Option<PathBuf>,
     pub tls_key:         Option<PathBuf>,
-    pub unix_listen:     Option<Vec<PathBuf>>,
+    pub unix_listen:     Option<Vec<UnixSocketSpec>>,
     pub user_attributes: Option<HashMap<String, String>>,
     pub user_overrides:  Option<HashMap<String, HashMap<String, String>>>,
     pub log_level:       Option<String>,
@@ -249,7 +291,19 @@ pub fn merge_config(file: Option<FileConfig>) -> Result<Config> {
 
     let tls_cert = fc.tls_cert;
     let tls_key  = fc.tls_key;
-    let unix_listen = fc.unix_listen.unwrap_or_default();
+    let unix_listen = fc.unix_listen
+        .unwrap_or_default()
+        .into_iter()
+        .map(|spec| match spec {
+            UnixSocketSpec::Path(path) => Ok(UnixSocket { path, owner: None, group: None, mode: None }),
+            UnixSocketSpec::Full(f) => Ok(UnixSocket {
+                path: f.path,
+                owner: f.owner,
+                group: f.group,
+                mode: f.mode.map(parse_chmod_mode).transpose()?,
+            }),
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     if !tls_listen.is_empty() && (tls_cert.is_none() || tls_key.is_none()) {
         anyhow::bail!("tls_listen requires tls_cert and tls_key");
@@ -901,27 +955,52 @@ mail = "alice@external.com"
     fn file_config_parses_unix_listen() {
         let toml = r#"unix_listen = ["/run/pwldapd/ldap.sock", "/tmp/ldap.sock"]"#;
         let fc: FileConfig = toml::from_str(toml).unwrap();
-        let paths = fc.unix_listen.unwrap();
-        assert_eq!(paths.len(), 2);
-        assert_eq!(paths[0], std::path::Path::new("/run/pwldapd/ldap.sock"));
-        assert_eq!(paths[1], std::path::Path::new("/tmp/ldap.sock"));
+        let specs = fc.unix_listen.unwrap();
+        assert_eq!(specs.len(), 2);
     }
 
     #[test]
     fn merge_config_unix_listen_applied() {
         let fc = FileConfig {
             unix_listen: Some(vec![
-                "/run/pwldapd/ldap.sock".into(),
-                "/tmp/ldap.sock".into(),
+                UnixSocketSpec::Path("/run/pwldapd/ldap.sock".into()),
+                UnixSocketSpec::Path("/tmp/ldap.sock".into()),
             ]),
             base_dn: Some("dc=test,dc=com".into()),
             ..Default::default()
         };
         let cfg = merge_config(Some(fc)).unwrap();
-        assert_eq!(cfg.unix_listen, vec![
-            std::path::PathBuf::from("/run/pwldapd/ldap.sock"),
-            std::path::PathBuf::from("/tmp/ldap.sock"),
-        ]);
+        assert_eq!(cfg.unix_listen[0].path, std::path::PathBuf::from("/run/pwldapd/ldap.sock"));
+        assert_eq!(cfg.unix_listen[1].path, std::path::PathBuf::from("/tmp/ldap.sock"));
+        assert_eq!(cfg.unix_listen[0].mode, None);
+        assert_eq!(cfg.unix_listen[0].owner, None);
+    }
+
+    #[test]
+    fn unix_listen_full_form_parses() {
+        let toml = r#"
+            unix_listen = [
+                { path = "/run/pwldapd/ldap.sock", owner = "root", group = "ldap", mode = 660 },
+            ]
+            base_dn = "dc=test,dc=com"
+        "#;
+        let fc: FileConfig = toml::from_str(toml).unwrap();
+        let cfg = merge_config(Some(fc)).unwrap();
+        let sock = &cfg.unix_listen[0];
+        assert_eq!(sock.path, std::path::PathBuf::from("/run/pwldapd/ldap.sock"));
+        assert_eq!(sock.owner.as_deref(), Some("root"));
+        assert_eq!(sock.group.as_deref(), Some("ldap"));
+        assert_eq!(sock.mode, Some(0o660));
+    }
+
+    #[test]
+    fn unix_listen_invalid_mode_rejected() {
+        let toml = r#"
+            unix_listen = [{ path = "/tmp/test.sock", mode = 689 }]
+            base_dn = "dc=test,dc=com"
+        "#;
+        let fc: FileConfig = toml::from_str(toml).unwrap();
+        assert!(merge_config(Some(fc)).is_err());
     }
 
     #[test]

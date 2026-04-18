@@ -196,8 +196,31 @@ network access:
 unix_listen = ["/run/pwldapd/ldap.sock"]
 ```
 
-Multiple paths are supported. Plain TCP, TLS, and Unix listeners can all
-run simultaneously.
+Each entry can also be an inline table with optional `owner`, `group`, and
+`mode` fields:
+
+```toml
+unix_listen = [
+    { path = "/run/pwldapd/ldap.sock", owner = "root", group = "ldap", mode = 660 },
+]
+```
+
+`mode` uses chmod notation — octal digits written without a prefix (`660`
+means `0o660`). If `mode` is omitted the socket is created with the system
+default permissions (the process umask applies as normal). If `owner` or
+`group` is omitted the socket's ownership is not changed. Both `owner` and
+`group` accept either a name or a numeric UID/GID.
+
+Multiple paths are supported, and the two forms may be mixed:
+
+```toml
+unix_listen = [
+    "/run/pwldapd/plain.sock",
+    { path = "/run/pwldapd/restricted.sock", group = "ldap", mode = 660 },
+]
+```
+
+Plain TCP, TLS, and Unix listeners can all run simultaneously.
 
 If a socket file already exists at the path when the daemon starts (e.g.
 from a previous run), it is removed and recreated automatically.
