@@ -1,4 +1,15 @@
 #!/bin/sh
 set -e
 
+case "$1" in
+    purge)
+        if getent passwd pwldapd >/dev/null; then
+            deluser --system pwldapd || true
+        fi
+        if getent group pwldapd >/dev/null; then
+            delgroup --only-if-empty pwldapd || true
+        fi
+        ;;
+esac
+
 #DEBHELPER#

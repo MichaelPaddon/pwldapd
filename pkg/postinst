@@ -1,4 +1,16 @@
 #!/bin/sh
 set -e
 
+case "$1" in
+    install|upgrade)
+        if ! getent group pwldapd >/dev/null; then
+            addgroup --system pwldapd
+        fi
+        if ! getent passwd pwldapd >/dev/null; then
+            adduser --system --ingroup pwldapd --no-create-home \
+                --shell /usr/sbin/nologin --gecos "pwldapd daemon" pwldapd
+        fi
+        ;;
+esac
+
 #DEBHELPER#
