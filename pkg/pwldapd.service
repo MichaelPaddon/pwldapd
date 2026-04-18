@@ -14,7 +14,6 @@ Group=pwldapd
 # shadow group membership lets pam_unix.so read /etc/shadow directly,
 # avoiding the need for the setgid unix_chkpwd helper.
 SupplementaryGroups=shadow
-NoNewPrivileges=yes
 
 # Creates /run/pwldapd owned by pwldapd:pwldapd, removed on stop.
 RuntimeDirectory=pwldapd
