@@ -48,11 +48,18 @@ pub async fn run(config: Config) -> Result<()> {
             std::fs::set_permissions(&sock.path, std::fs::Permissions::from_mode(mode))
                 .map_err(|e| anyhow::anyhow!("cannot set mode on {:?}: {e}", sock.path))?;
         }
-        if sock.owner.is_some() || sock.group.is_some() {
-            let uid = sock.owner.as_deref().map(resolve_uid).transpose()?;
-            let gid = sock.group.as_deref().map(resolve_gid).transpose()?;
-            std::os::unix::fs::chown(&sock.path, uid, gid)
-                .map_err(|e| anyhow::anyhow!("cannot chown {:?}: {e}", sock.path))?;
+        if let Some(owner) = &sock.owner {
+            let uid = resolve_uid(owner)?;
+            std::os::unix::fs::chown(&sock.path, Some(uid), None)
+                .map_err(|e| anyhow::anyhow!("cannot set owner of {:?}: {e}", sock.path))?;
+        }
+        if let Some(group) = &sock.group {
+            let gid = resolve_gid(group)?;
+            std::os::unix::fs::chown(&sock.path, None, Some(gid))
+                .map_err(|e| anyhow::anyhow!(
+                    "cannot set group of {:?}: {e} \
+                     (the daemon process must be a member of group {:?} or have CAP_CHOWN)",
+                    sock.path, group))?;
         }
         info!("Listening on {:?} (unix)", sock.path);
         let cfg = config.clone();
